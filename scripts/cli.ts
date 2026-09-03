@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ZodError } from 'zod';
 import { openDatabase, type SqliteDatabase } from '../storage/connection.js';
@@ -17,6 +17,10 @@ import { createSqliteRunRecorder } from '../exploration/repository/exploration-r
 import { explorationGoalSchema, type ExplorationGoal } from '../exploration/contracts/exploration-goal.js';
 import { DefaultExplorationRuntimeRouter } from '../runtime/types.js';
 import { createHermesAdapter } from '../runtime/hermes/index.js';
+import {
+  renderExplorationArtifact,
+  type AcceptedEvidenceRow,
+} from '../exploration/artifact/exploration-artifact.js';
 
 // scripts/cli — `npm run cli -- <command> ...`
 //
@@ -347,6 +351,23 @@ async function explore(args: string[]): Promise<void> {
       process.stdout.write(`explore: summary="${r.summary}"\n`);
       process.stdout.write(`explore: candidates=${r.evidenceCandidates.length} sources=${r.sources.length}\n`);
     }
+    // Write the per-run human-readable Markdown artifact. The
+    // artifact is a dev-time observation window, not a new
+    // business persistence model. It is generated from the
+    // in-memory `outcome` + the P0001 evidence rows the bridge
+    // wrote for this run, surfaced via a single targeted SQL
+    // query. The Domain (ExplorationResult contract, Runtime
+    // seam, P0001 contracts) is not changed.
+    const artifactPath = writeExplorationArtifact({
+      db,
+      recorder,
+      runId: outcome.runId,
+      goal,
+      outcome,
+    });
+    if (artifactPath !== null) {
+      process.stdout.write(`explore: artifact=${artifactPath}\n`);
+    }
     if (outcome.status === 'failed') {
       process.exit(1);
     }
@@ -356,6 +377,100 @@ async function explore(args: string[]): Promise<void> {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Render and write a per-run human-readable Markdown artifact
+ * for one `explore` invocation. Returns the absolute file path
+ * on success, or `null` if the run record could not be loaded
+ * (which would be a bridge/repository inconsistency, not a
+ * normal failure mode).
+ *
+ * Inputs:
+ *   - the in-memory `outcome` (carries the Agent's ExplorationResult)
+ *   - the `runRecord` (carries startedAt / completedAt / status / counts)
+ *   - the list of P0001 evidence rows written by THIS run, derived
+ *     by a single SQL query over the run's time window. The renderer
+ *     matches per-candidate decisions by `claim`, not by index or
+ *     timestamp, so a window-based pull is safe (claims are unique
+ *     within a run).
+ *
+ * Output:
+ *   - Markdown file at `artifacts/exploration/<startedAt>_<market>_<runId>.md`
+ *   - `artifacts/exploration/` is created if it does not exist.
+ *   - The file path is deterministic for a given (runId); re-running
+ *     the CLI does not duplicate artifacts (the same `runId` is not
+ *     re-recorded in the same DB).
+ */
+function writeExplorationArtifact(args: {
+  db: SqliteDatabase;
+  recorder: ReturnType<typeof createSqliteRunRecorder>;
+  runId: string;
+  goal: ExplorationGoal;
+  outcome: import('../exploration/bridge/exploration-bridge.js').ExplorationRunOutcome;
+}): string | null {
+  const runRecord = args.recorder.getRun(args.runId);
+  if (runRecord === undefined) {
+    // Should never happen — the bridge just wrote the row.
+    return null;
+  }
+  const acceptedEvidence = collectRunAcceptedEvidence(
+    args.db,
+    runRecord.startedAt,
+    runRecord.completedAt ?? runRecord.startedAt,
+  );
+  const markdown = renderExplorationArtifact({
+    goal: args.goal,
+    runRecord,
+    outcome: args.outcome,
+    acceptedEvidence,
+  });
+  const dir = resolve(process.cwd(), 'artifacts', 'exploration');
+  mkdirSync(dir, { recursive: true });
+  // ISO 8601 with `:` and `.` replaced so the path is portable
+  // across filesystems (Windows / case-insensitive volumes).
+  const safeTimestamp = runRecord.startedAt.replace(/[:.]/g, '-');
+  const filePath = resolve(dir, `${safeTimestamp}_${runRecord.goal.market}_${runRecord.id}.md`);
+  writeFileSync(filePath, markdown, 'utf-8');
+  return filePath;
+}
+
+/**
+ * Pull the P0001 evidence rows that the bridge wrote during a
+ * given run's time window. The bridge writes one row per accepted
+ * candidate in a single transaction at `runRecord.completedAt`,
+ * so the window is [startedAt, completedAt] inclusive. The join
+ * also pulls the linked source's `canonical_url` for the artifact.
+ *
+ * This is a dev-time helper, not a Domain read API. The renderer's
+ * `decideCandidate` matches by `claim`; the SQL pull is just a
+ * narrowing step.
+ */
+function collectRunAcceptedEvidence(
+  db: SqliteDatabase,
+  startedAt: string,
+  completedAt: string,
+): AcceptedEvidenceRow[] {
+  const stmt = db.prepare(
+    `SELECT e.id AS evidence_id, e.claim AS claim, sd.id AS source_id, sd.canonical_url AS source_url
+     FROM evidence e
+     JOIN evidence_sources es ON es.evidence_id = e.id
+     JOIN source_documents sd ON sd.id = es.source_id
+     WHERE e.created_at >= ? AND e.created_at <= ?
+     ORDER BY e.created_at ASC`,
+  );
+  const rows = stmt.all(startedAt, completedAt) as Array<{
+    evidence_id: string;
+    claim: string;
+    source_id: string;
+    source_url: string;
+  }>;
+  return rows.map((r) => ({
+    id: r.evidence_id,
+    claim: r.claim,
+    sourceId: r.source_id,
+    sourceCanonicalUrl: r.source_url,
+  }));
 }
 
 async function main(): Promise<void> {

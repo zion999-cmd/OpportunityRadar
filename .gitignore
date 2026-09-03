@@ -27,3 +27,8 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+
+# Dev-time exploration artifacts (one .md per `explore` run).
+# The directory is created on demand by the CLI; the files are
+# observation windows for human review, not part of the commit.
+artifacts/
