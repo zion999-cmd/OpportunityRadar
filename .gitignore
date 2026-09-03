@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output (currently none, but guard for the future)
+dist/
+build/
+*.tsbuildinfo
+
+# environment / secrets
+.env
+.env.*
+!.env.example
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# test / coverage artifacts
+coverage/
+.nyc_output/
+*.log
