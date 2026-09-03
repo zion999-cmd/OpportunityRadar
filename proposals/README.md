@@ -64,12 +64,26 @@ sections are evidence of incomplete scoping.
 - `Superseded` Proposals are kept; their `## History` section must
   link to the replacement.
 
-## The next Proposal
+## Proposal index
+
+| ID | Title | Status | Date |
+|---|---|---|---|
+| P0001 | Evidence Foundation | Completed | 2026-09-03 |
+
+P0001 shipped the Evidence layer (contracts, normalization, Ground
+Truth, SQLite substrate, repository, CLI) on 2026-09-03. Status
+is frozen; subsequent changes to the Evidence layer go in a new
+Proposal. Until P0002 is `Approved`, no Market Signal code,
+schema, or derivation logic may be added.
+
+## The next Proposal (after P0001 is Completed)
 
 ```
-P0001 — Evidence Foundation
+P0002 — Market Signal (proposed; not authored yet)
 ```
 
-It will introduce the first real business layer: Evidence. Until
-`P0001` is `Approved`, this directory contains no Proposal files
-beyond this README.
+P0002 will introduce the second Analytical Object: a structured
+interpretation of one or more Evidence items. Its scope must be
+authored in its own Proposal file. Until P0002 is `Approved`, no
+Market Signal code, schema, or signal-derivation logic may be
+added.

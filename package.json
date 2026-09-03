@@ -3,16 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Opportunity Radar — independent opportunity intelligence product. Bootstrap stage.",
+  "description": "Opportunity Radar — independent opportunity intelligence product. P0001 Evidence Foundation.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:init": "tsx scripts/db-init.ts",
+    "cli": "tsx scripts/cli.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^11.5.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

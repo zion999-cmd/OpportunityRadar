@@ -1,0 +1,38 @@
+{
+  "source": {
+    "id": "src-example-wonderful",
+    "sourceType": "news",
+    "publisher": "Example News",
+    "title": "Example article about Wonderful Series C",
+    "canonicalUrl": "https://example.com/wonderful-series-c",
+    "publishedAt": "2026-09-02T10:00:00.000Z",
+    "accessedAt": "2026-09-03T01:00:00.000Z",
+    "language": "en",
+    "market": "US"
+  },
+  "evidence": [
+    {
+      "id": "ev-example-wonderful-funding",
+      "claim": "Example: Wonderful raised USD 550M in a Series C financing round.",
+      "subject": "Wonderful",
+      "evidenceType": "funding",
+      "eventAt": "2026-08-30T00:00:00.000Z",
+      "observedAt": "2026-09-03T01:00:00.000Z",
+      "market": "US",
+      "confidence": "primary",
+      "sourceRefs": ["src-example-wonderful"],
+      "metadata": { "currency": "USD", "amount": 550000000, "round": "Series C" }
+    },
+    {
+      "id": "ev-example-wonderful-customers",
+      "claim": "Example: Wonderful reported approximately 100 enterprise customers.",
+      "subject": "Wonderful",
+      "evidenceType": "customer_adoption",
+      "eventAt": "2026-08-30T00:00:00.000Z",
+      "observedAt": "2026-09-03T01:00:00.000Z",
+      "market": "US",
+      "confidence": "reported",
+      "sourceRefs": ["src-example-wonderful"]
+    }
+  ]
+}

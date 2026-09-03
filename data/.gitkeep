@@ -1,0 +1,5 @@
+# Local data directory.
+#
+# This directory exists so the bootstrap and `npm run db:init` have a
+# stable home for SQLite databases. The actual DB files are ignored
+# by .gitignore (`data/*.db*`); only this placeholder is tracked.
