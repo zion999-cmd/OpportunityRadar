@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Opportunity Radar — Recruiting Exhibit</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Radar / Inbox</h1>
+    <p class="tagline">The system is observing. New Evidence will arrive without you asking.</p>
+  </header>
+
+  <main>
+    <!-- 1. Current Situation -->
+    <section class="card" id="card-situation">
+      <header class="card-head">
+        <h2>1. Current Situation</h2>
+        <p class="hint">Raw natural-language only. Not parsed into skills, tags, or filters.</p>
+      </header>
+      <textarea id="situation-text" rows="6" spellcheck="false" placeholder="Describe what you are looking for, in your own words."></textarea>
+      <div class="row">
+        <button id="save-situation" class="primary">Save Situation</button>
+        <button id="run-now" class="ghost">Run observation now</button>
+        <span id="save-status" class="muted"></span>
+      </div>
+    </section>
+
+    <!-- 2. Observation Status -->
+    <section class="card" id="card-status">
+      <header class="card-head">
+        <h2>2. Observation Status</h2>
+        <p class="hint">The system is watching the world for you. You are not searching.</p>
+      </header>
+      <dl class="kv">
+        <dt>Last observation</dt><dd id="status-last">—</dd>
+        <dt>Next observation</dt><dd id="status-next">—</dd>
+        <dt>New Evidence (this run)</dt><dd id="status-evidence">0</dd>
+        <dt>New Relationship (this run)</dt><dd id="status-relationship">0</dd>
+        <dt>Total surfaced to inbox</dt><dd id="status-total">0</dd>
+      </dl>
+    </section>
+
+    <!-- 3. Relationship Inbox -->
+    <section class="card" id="card-inbox">
+      <header class="card-head">
+        <h2>3. Relationship Inbox</h2>
+        <p class="hint">Things the system thinks may matter to your current Situation. No scores, no keyword matches, no skill overlaps.</p>
+      </header>
+      <div id="inbox-list" class="inbox"></div>
+    </section>
+
+    <!-- 4. Observation Feed -->
+    <section class="card" id="card-feed">
+      <header class="card-head">
+        <h2>4. Observation Feed</h2>
+        <p class="hint">The recent public Evidence the system has captured, with whether it surfaced to the Inbox.</p>
+      </header>
+      <ul id="feed-list" class="feed"></ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>

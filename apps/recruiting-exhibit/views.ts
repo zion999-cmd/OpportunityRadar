@@ -1,0 +1,160 @@
+// apps/recruiting-exhibit/views.ts — read-side queries that
+// back the four single-page sections.
+//
+// Per task.md, the page shows:
+//   1. Current Situation
+//   2. Observation Status (last / next / new evidence / new relationship)
+//   3. Relationship Inbox (only `surface` decisions)
+//   4. Observation Feed (recent Evidence with surfaced / not surfaced)
+//
+// All queries are read-only and use prepared statements.
+
+import type { SqliteDatabase } from '../../storage/connection.js';
+
+export interface ObservationStatus {
+  readonly lastObservationAt: string | null;
+  readonly lastRunStatus: 'running' | 'succeeded' | 'failed' | null;
+  readonly nextObservationAt: string | null;
+  readonly newEvidenceCount: number;
+  readonly newRelationshipCount: number;
+  readonly totalSurfaces: number;
+}
+
+export interface InboxEntry {
+  readonly relationshipId: string;
+  readonly evidenceId: string;
+  readonly sourceLabel: string;
+  readonly sourceUrl: string;
+  readonly claim: string;
+  readonly whyRelevant: string;
+  readonly evidenceUsed: string;
+  readonly mostImportantUnknown: string;
+  readonly surfacedAt: string;
+}
+
+export interface FeedEntry {
+  readonly evidenceId: string;
+  readonly sourceLabel: string;
+  readonly sourceUrl: string;
+  readonly claim: string;
+  readonly impliedMeaning: string;
+  readonly relationshipStatus: 'surfaced' | 'not_surfaced';
+  readonly capturedAt: string;
+}
+
+const LAST_RUN_SQL = `
+  SELECT started_at, status FROM exhibit_observation_runs
+  ORDER BY started_at DESC LIMIT 1
+`;
+const LATEST_RUN_COUNTS_SQL = `
+  SELECT new_evidence_count, new_relationship_count FROM exhibit_observation_runs
+  ORDER BY started_at DESC LIMIT 1
+`;
+const TOTAL_SURFACED_SQL = `
+  SELECT COUNT(*) AS c FROM exhibit_relationship_results WHERE surface_decision = 'surface'
+`;
+const INBOX_SQL = `
+  SELECT
+    r.id              AS relationshipId,
+    r.evidence_id     AS evidenceId,
+    s.source_label    AS sourceLabel,
+    s.source_url      AS sourceUrl,
+    e.claim           AS claim,
+    r.why_relevant    AS whyRelevant,
+    r.evidence_used   AS evidenceUsed,
+    r.most_important_unknown AS mostImportantUnknown,
+    r.surfaced_at     AS surfacedAt
+  FROM exhibit_relationship_results r
+  JOIN exhibit_reconstructed_evidence e ON e.id = r.evidence_id
+  JOIN exhibit_source_items s          ON s.id = e.source_item_id
+  WHERE r.surface_decision = 'surface'
+  ORDER BY r.surfaced_at DESC
+  LIMIT 50
+`;
+const FEED_SQL = `
+  SELECT
+    e.id                AS evidenceId,
+    s.source_label      AS sourceLabel,
+    s.source_url        AS sourceUrl,
+    e.claim             AS claim,
+    e.implied_meaning   AS impliedMeaning,
+    CASE
+      WHEN r.id IS NULL THEN 'not_surfaced'
+      WHEN r.surface_decision = 'surface' THEN 'surfaced'
+      ELSE 'not_surfaced'
+    END                 AS relationshipStatus,
+    COALESCE(r.surfaced_at, e.created_at) AS capturedAt
+  FROM exhibit_reconstructed_evidence e
+  JOIN exhibit_source_items s ON s.id = e.source_item_id
+  LEFT JOIN exhibit_relationship_results r ON r.evidence_id = e.id
+  ORDER BY e.created_at DESC
+  LIMIT 50
+`;
+
+export interface ScheduleConfig {
+  readonly intervalMs: number;
+}
+
+const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
+
+export function readStatus(db: SqliteDatabase, schedule: ScheduleConfig = { intervalMs: DEFAULT_INTERVAL_MS }): ObservationStatus {
+  const last = db.prepare(LAST_RUN_SQL).get() as { started_at: string; status: 'running' | 'succeeded' | 'failed' } | undefined;
+  const counts = db.prepare(LATEST_RUN_COUNTS_SQL).get() as { new_evidence_count: number; new_relationship_count: number } | undefined;
+  const totalSurfaced = (db.prepare(TOTAL_SURFACED_SQL).get() as { c: number } | undefined)?.c ?? 0;
+
+  let nextObservationAt: string | null = null;
+  if (last !== undefined) {
+    const lastStart = Date.parse(last.started_at);
+    if (Number.isFinite(lastStart)) {
+      nextObservationAt = new Date(lastStart + schedule.intervalMs).toISOString();
+    }
+  }
+
+  return {
+    lastObservationAt: last?.started_at ?? null,
+    lastRunStatus: last?.status ?? null,
+    nextObservationAt,
+    newEvidenceCount: counts?.new_evidence_count ?? 0,
+    newRelationshipCount: counts?.new_relationship_count ?? 0,
+    totalSurfaces: totalSurfaced,
+  };
+}
+
+export function readInbox(db: SqliteDatabase): ReadonlyArray<InboxEntry> {
+  return db.prepare(INBOX_SQL).all() as InboxEntry[];
+}
+
+export function readFeed(db: SqliteDatabase): ReadonlyArray<FeedEntry> {
+  return db.prepare(FEED_SQL).all() as FeedEntry[];
+}
+
+const INSERT_FEEDBACK_SQL = `
+  INSERT INTO exhibit_feedback (id, relationship_id, button, recorded_at)
+  VALUES (?, ?, ?, ?)
+`;
+
+export function recordFeedback(db: SqliteDatabase, relationshipId: string, button: 'worth_talking' | 'investigate_more' | 'not_relevant'): void {
+  if (button !== 'worth_talking' && button !== 'investigate_more' && button !== 'not_relevant') {
+    throw new Error(`unknown feedback button: ${button}`);
+  }
+  const recordedAt = new Date().toISOString();
+  // Importing crypto at the top of the file would force Node-only
+  // modules; this is a tiny UUID-v4 generator inlined here so the
+  // file stays dependency-free at the import level.
+  const id = inlineUuidV4();
+  db.prepare(INSERT_FEEDBACK_SQL).run(id, relationshipId, button, recordedAt);
+}
+
+function inlineUuidV4(): string {
+  // RFC 4122 v4 using Math.random — fine for a local-exhibit
+  // primary key, not a cryptographic identifier.
+  const hex = '0123456789abcdef';
+  let out = '';
+  for (let i = 0; i < 32; i += 1) {
+    if (i === 8 || i === 12 || i === 16 || i === 20) out += '-';
+    if (i === 12) { out += '4'; continue; }
+    if (i === 16) { out += hex[(Math.random() * 4) | 0 | 8]; continue; }
+    out += hex[(Math.random() * 16) | 0];
+  }
+  return out;
+}
