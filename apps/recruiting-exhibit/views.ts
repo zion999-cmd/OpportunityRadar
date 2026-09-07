@@ -3,11 +3,15 @@
 //
 // Per task.md, the page shows:
 //   1. Current Situation
-//   2. Observation Status (last / next / new evidence / new relationship)
+//   2. Observation Status (last / next / new evidence / new relationship / last error)
 //   3. Relationship Inbox (only `surface` decisions)
 //   4. Observation Feed (recent Evidence with surfaced / not surfaced)
 //
-// All queries are read-only and use prepared statements.
+// All queries are read-only and use prepared statements. The
+// `feedUrl` field is surfaced so the UI can link both the
+// originating feed AND the article (postmortem) itself — the
+// audit fix #2 requirement that the user can click the real
+// source-item URL, not just the feed URL.
 
 import type { SqliteDatabase } from '../../storage/connection.js';
 
@@ -18,13 +22,22 @@ export interface ObservationStatus {
   readonly newEvidenceCount: number;
   readonly newRelationshipCount: number;
   readonly totalSurfaces: number;
+  /**
+   * Error summary from the most recent run, if any. Audit fix
+   * #3: partial failure is observable. `null` means the most
+   * recent run completed with no errors recorded.
+   */
+  readonly lastError: string | null;
 }
 
 export interface InboxEntry {
   readonly relationshipId: string;
   readonly evidenceId: string;
   readonly sourceLabel: string;
+  /** Article / postmortem URL — what the user actually clicks. */
   readonly sourceUrl: string;
+  /** Originating feed URL — surfaced alongside the article link. */
+  readonly feedUrl: string;
   readonly claim: string;
   readonly whyRelevant: string;
   readonly evidenceUsed: string;
@@ -36,14 +49,20 @@ export interface FeedEntry {
   readonly evidenceId: string;
   readonly sourceLabel: string;
   readonly sourceUrl: string;
+  readonly feedUrl: string;
   readonly claim: string;
   readonly impliedMeaning: string;
   readonly relationshipStatus: 'surfaced' | 'not_surfaced';
   readonly capturedAt: string;
 }
 
+export interface ScheduleConfig {
+  /** Interval (ms) between scheduled observation runs. */
+  readonly intervalMs: number;
+}
+
 const LAST_RUN_SQL = `
-  SELECT started_at, status FROM exhibit_observation_runs
+  SELECT started_at, status, error_message FROM exhibit_observation_runs
   ORDER BY started_at DESC LIMIT 1
 `;
 const LATEST_RUN_COUNTS_SQL = `
@@ -59,6 +78,7 @@ const INBOX_SQL = `
     r.evidence_id     AS evidenceId,
     s.source_label    AS sourceLabel,
     s.source_url      AS sourceUrl,
+    s.feed_url        AS feedUrl,
     e.claim           AS claim,
     r.why_relevant    AS whyRelevant,
     r.evidence_used   AS evidenceUsed,
@@ -76,6 +96,7 @@ const FEED_SQL = `
     e.id                AS evidenceId,
     s.source_label      AS sourceLabel,
     s.source_url        AS sourceUrl,
+    s.feed_url          AS feedUrl,
     e.claim             AS claim,
     e.implied_meaning   AS impliedMeaning,
     CASE
@@ -91,14 +112,15 @@ const FEED_SQL = `
   LIMIT 50
 `;
 
-export interface ScheduleConfig {
-  readonly intervalMs: number;
-}
-
-const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
-
-export function readStatus(db: SqliteDatabase, schedule: ScheduleConfig = { intervalMs: DEFAULT_INTERVAL_MS }): ObservationStatus {
-  const last = db.prepare(LAST_RUN_SQL).get() as { started_at: string; status: 'running' | 'succeeded' | 'failed' } | undefined;
+/**
+ * Read observation status. The `intervalMs` is required: the
+ * next-observation time is `lastStarted + intervalMs`, and the
+ * server is the only caller that knows the real interval.
+ * There is no default — callers must pass the actual scheduled
+ * interval.
+ */
+export function readStatus(db: SqliteDatabase, schedule: ScheduleConfig): ObservationStatus {
+  const last = db.prepare(LAST_RUN_SQL).get() as { started_at: string; status: 'running' | 'succeeded' | 'failed'; error_message: string | null } | undefined;
   const counts = db.prepare(LATEST_RUN_COUNTS_SQL).get() as { new_evidence_count: number; new_relationship_count: number } | undefined;
   const totalSurfaced = (db.prepare(TOTAL_SURFACED_SQL).get() as { c: number } | undefined)?.c ?? 0;
 
@@ -117,6 +139,7 @@ export function readStatus(db: SqliteDatabase, schedule: ScheduleConfig = { inte
     newEvidenceCount: counts?.new_evidence_count ?? 0,
     newRelationshipCount: counts?.new_relationship_count ?? 0,
     totalSurfaces: totalSurfaced,
+    lastError: last?.error_message ?? null,
   };
 }
 

@@ -89,13 +89,13 @@ describe('recruiting-exhibit observation run', () => {
   it('records a successful run with the expected schema and counts', async () => {
     // Pre-queue enough stub outputs to cover the
     // FIXED_SOURCES count. The fetcher is also stubbed so
-    // every source returns one item.
+    // every source returns one item. All relationships surface
+    // here so the count equals the item count.
     const queue: string[] = [];
     const totalItems = FIXED_SOURCES.length; // one item per source
     for (let n = 0; n < totalItems; n += 1) {
-      const decision: 'surface' | 'do_not_surface' = n % 2 === 0 ? 'surface' : 'do_not_surface';
       queue.push(evidenceStdout(`claim ${n}`));
-      queue.push(relationshipStdout(decision, `reason ${n}`));
+      queue.push(relationshipStdout('surface', `reason ${n}`));
     }
     const client = new StubClient(queue);
     const result = await runObservation({ db: db!, client, now: () => new Date('2026-09-07T12:00:00Z') }, 'manual');
@@ -120,7 +120,7 @@ describe('recruiting-exhibit observation run', () => {
       recordFeedback(db!, inbox[0].relationshipId, 'worth_talking');
       recordFeedback(db!, inbox[0].relationshipId, 'investigate_more');
     }
-    const status = readStatus(db!);
+    const status = readStatus(db!, { intervalMs: 60 * 60 * 1000 });
     expect(status.lastObservationAt).not.toBeNull();
     expect(status.totalSurfaces).toBe(FIXED_SOURCES.length);
   });

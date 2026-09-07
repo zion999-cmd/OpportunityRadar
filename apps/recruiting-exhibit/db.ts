@@ -15,6 +15,7 @@ export const DEFAULT_EXHIBIT_DB_PATH = 'data/dev.db';
 export function openExhibitDatabase(path: string = DEFAULT_EXHIBIT_DB_PATH): SqliteDatabase {
   const db = openDatabase(path);
   applyExhibitDdl(db);
+  applyDefensiveMigrations(db);
   return db;
 }
 
@@ -23,3 +24,25 @@ function applyExhibitDdl(db: SqliteDatabase): void {
     db.exec(stmt);
   }
 }
+
+// Defensive in-place migrations for DBs created by an earlier
+// version of the exhibit (no `feed_url` column). SQLite has no
+// `ADD COLUMN IF NOT EXISTS`; we attempt the ALTER and swallow
+// the "duplicate column" error, which is the documented SQLite
+// signal that the column already exists.
+function applyDefensiveMigrations(db: SqliteDatabase): void {
+  for (const stmt of DEFENSIVE_MIGRATIONS) {
+    try {
+      db.exec(stmt);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name/i.test(message)) {
+        throw err;
+      }
+    }
+  }
+}
+
+const DEFENSIVE_MIGRATIONS: readonly string[] = [
+  `ALTER TABLE exhibit_source_items ADD COLUMN feed_url TEXT NOT NULL DEFAULT ''`,
+];

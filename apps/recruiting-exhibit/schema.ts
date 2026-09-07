@@ -42,6 +42,7 @@ export const EXHIBIT_DDL: readonly string[] = [
      run_id        TEXT NOT NULL,
      source_label  TEXT NOT NULL,
      source_url    TEXT NOT NULL,
+     feed_url      TEXT NOT NULL DEFAULT '',
      captured_at   TEXT NOT NULL,
      title         TEXT,
      raw_excerpt   TEXT NOT NULL,
@@ -50,6 +51,11 @@ export const EXHIBIT_DDL: readonly string[] = [
      FOREIGN KEY (run_id) REFERENCES exhibit_observation_runs(id) ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS idx_exhibit_sources_run_id ON exhibit_source_items(run_id)`,
+  // Dedup key: the same (source_label, article URL) pair must
+  // never be processed twice. Subsequent runs that see the same
+  // item will INSERT OR IGNORE here and skip the entire
+  // Evidence Reconstruction + Relationship Reasoning pipeline.
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_exhibit_source_dedup ON exhibit_source_items(source_label, source_url)`,
 
   `CREATE TABLE IF NOT EXISTS exhibit_reconstructed_evidence (
      id                    TEXT PRIMARY KEY,

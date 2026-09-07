@@ -13,7 +13,7 @@ import type { HermesClient } from '../../runtime/hermes/types.js';
 import type { SqliteDatabase } from '../../storage/connection.js';
 import { runObservation, type RunResult } from './observation.js';
 import { readSituation, writeSituation } from './situation-repo.js';
-import { readFeed, readInbox, readStatus, recordFeedback } from './views.js';
+import { readFeed, readInbox, readStatus, recordFeedback, type ScheduleConfig } from './views.js';
 
 export interface ServerDeps {
   readonly db: SqliteDatabase;
@@ -54,7 +54,8 @@ export function startServer(deps: ServerDeps): { stop: () => void; triggerNow: (
   // Allow the process to exit even if the interval is still set.
   schedule.unref();
 
-  const server = createServer((req, res) => handle(req, res, { db, triggerNow }));
+  const scheduleConfig: ScheduleConfig = { intervalMs };
+  const server = createServer((req, res) => handle(req, res, { db, triggerNow, schedule: scheduleConfig }));
   server.listen(port, () => {
     process.stdout.write(`recruiting-exhibit listening on http://127.0.0.1:${port}\n`);
   });
@@ -71,6 +72,7 @@ export function startServer(deps: ServerDeps): { stop: () => void; triggerNow: (
 interface HandleDeps {
   readonly db: SqliteDatabase;
   readonly triggerNow: () => Promise<RunResult>;
+  readonly schedule: ScheduleConfig;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, deps: HandleDeps): Promise<void> {
@@ -102,7 +104,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HandleDep
     }
   }
   if (method === 'GET' && url.pathname === '/api/status') {
-    return json(res, 200, readStatus(deps.db));
+    // Pass the real interval so `nextObservationAt` is computed
+    // against the actual schedule — not a hidden default.
+    return json(res, 200, readStatus(deps.db, deps.schedule));
   }
   if (method === 'GET' && url.pathname === '/api/inbox') {
     return json(res, 200, { entries: readInbox(deps.db) });
@@ -112,6 +116,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HandleDep
   }
   if (method === 'POST' && url.pathname === '/api/observation/run') {
     const result = await deps.triggerNow();
+    // Audit fix #5: a second concurrent run is not silently
+    // queued and not silently merged — it is rejected with 409
+    // so the operator can see that the system is busy.
+    if (result.status === 'skipped') {
+      return json(res, 409, {
+        error: result.errorMessage ?? 'another run is in progress',
+      } satisfies JsonError);
+    }
     return json(res, 202, result);
   }
   if (method === 'POST' && url.pathname === '/api/feedback') {
