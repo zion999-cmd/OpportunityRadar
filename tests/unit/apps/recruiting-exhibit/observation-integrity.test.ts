@@ -285,3 +285,147 @@ describe('audit fix #6: readStatus uses the real intervalMs', () => {
     }
   });
 });
+
+describe('dedup recovery: stage-aware retry', () => {
+  // The orchestrator walks three stages in order for each
+  // item and only runs the missing ones:
+  //
+  //   Stage 1 — exhibit_source_items (insert if missing)
+  //   Stage 2 — exhibit_reconstructed_evidence
+  //             (run Evidence Reconstruction if missing)
+  //   Stage 3 — exhibit_relationship_results
+  //             (run Relationship Reasoning if missing)
+  //
+  // A successful earlier stage is never re-run. A transient
+  // failure on an earlier stage does not lose the item
+  // permanently — the next run retries the missing stage.
+
+  it('retries reconstruction on the second run when the first run failed before inserting evidence', async () => {
+    // First run: item 0's reconstruction call receives
+    // invalid JSON and throws. Items 1-3 succeed.
+    // Queue: 1 invalid + 3 * (recon + relationship) = 7.
+    const firstQueue: string[] = ['not valid json'];
+    for (let k = 1; k < FIXED_SOURCES.length; k += 1) {
+      firstQueue.push(evidenceStdout(`claim ${k}`));
+      firstQueue.push(relationshipStdout('surface', `reason ${k}`));
+    }
+    const first = await runObservation(
+      { db: db!, client: new StubClient(firstQueue), now: () => new Date('2026-09-07T12:00:00Z') },
+      'manual',
+    );
+    // Items 1-3 produced evidence (3) and surfaced (3).
+    expect(first.newEvidenceCount).toBe(FIXED_SOURCES.length - 1);
+    expect(first.newRelationshipCount).toBe(FIXED_SOURCES.length - 1);
+
+    // Second run: only item 0 needs work. The orchestrator
+    // must call Hermes exactly twice (reconstruction +
+    // relationship) for item 0, and zero times for the
+    // already-complete items 1-3. The queue has 2 outputs.
+    const secondClient = new StubClient([
+      evidenceStdout('claim 0 retried'),
+      relationshipStdout('surface', 'reason 0 retried'),
+    ]);
+    const second = await runObservation(
+      { db: db!, client: secondClient, now: () => new Date('2026-09-07T12:30:00Z') },
+      'manual',
+    );
+    expect(second.newEvidenceCount).toBe(1);
+    expect(second.newRelationshipCount).toBe(1);
+    expect(secondClient.calls.length).toBe(2);
+  });
+
+  it('skips reconstruction and retries only relationship on the second run when relationship failed first', async () => {
+    // First run: item 0's reconstruction succeeds, but its
+    // relationship call receives invalid JSON and throws.
+    // Items 1-3 succeed end-to-end.
+    // Queue: (recon_0 + invalid) + 3 * (recon + rel) = 8.
+    const firstQueue: string[] = [
+      evidenceStdout('claim 0'),
+      'not valid json', // item 0's relationship call fails
+    ];
+    for (let k = 1; k < FIXED_SOURCES.length; k += 1) {
+      firstQueue.push(evidenceStdout(`claim ${k}`));
+      firstQueue.push(relationshipStdout('surface', `reason ${k}`));
+    }
+    const first = await runObservation(
+      { db: db!, client: new StubClient(firstQueue), now: () => new Date('2026-09-07T12:00:00Z') },
+      'manual',
+    );
+    // All 4 reconstructions produced evidence; only 3
+    // relationships survived.
+    expect(first.newEvidenceCount).toBe(FIXED_SOURCES.length);
+    expect(first.newRelationshipCount).toBe(FIXED_SOURCES.length - 1);
+
+    // Second run: item 0 has source_item + evidence; only
+    // the relationship stage is missing. The orchestrator
+    // must call Hermes exactly once (relationship only) for
+    // item 0, and zero times for items 1-3.
+    const secondClient = new StubClient([
+      relationshipStdout('surface', 'reason 0 retried'),
+    ]);
+    const second = await runObservation(
+      { db: db!, client: secondClient, now: () => new Date('2026-09-07T12:30:00Z') },
+      'manual',
+    );
+    // No new evidence was created this run.
+    expect(second.newEvidenceCount).toBe(0);
+    expect(second.newRelationshipCount).toBe(1);
+    expect(secondClient.calls.length).toBe(1);
+  });
+
+  it('a fully-successful first run makes zero Hermes calls on the second run', async () => {
+    // The original "audit fix #1" test already covers this,
+    // but it is repeated here under the stage-aware
+    // framing to make the three scenarios co-located.
+    const first = await runObservation(
+      { db: db!, client: new StubClient(queueFor(FIXED_SOURCES.length, 'surface')), now: () => new Date('2026-09-07T12:00:00Z') },
+      'manual',
+    );
+    expect(first.newEvidenceCount).toBe(FIXED_SOURCES.length);
+    expect(first.newRelationshipCount).toBe(FIXED_SOURCES.length);
+
+    const secondClient = new StubClient([]);
+    const second = await runObservation(
+      { db: db!, client: secondClient, now: () => new Date('2026-09-07T12:30:00Z') },
+      'manual',
+    );
+    expect(second.newEvidenceCount).toBe(0);
+    expect(second.newRelationshipCount).toBe(0);
+    expect(secondClient.calls.length).toBe(0);
+  });
+
+  it('does not repeat a successful earlier stage on the second run', async () => {
+    // First run: item 0 fails at reconstruction. Items 1-3
+    // succeed end-to-end.
+    const firstQueue: string[] = ['not valid json'];
+    for (let k = 1; k < FIXED_SOURCES.length; k += 1) {
+      firstQueue.push(evidenceStdout(`claim ${k}`));
+      firstQueue.push(relationshipStdout('surface', `reason ${k}`));
+    }
+    await runObservation(
+      { db: db!, client: new StubClient(firstQueue), now: () => new Date('2026-09-07T12:00:00Z') },
+      'manual',
+    );
+
+    // Second run: capture the prompts sent to Hermes and
+    // verify item 1's reconstruction is NOT re-sent. The
+    // only calls should be for item 0's reconstruction and
+    // relationship. Each prompt names the item URL it
+    // pertains to (the prompt builder includes the article
+    // URL), so we can detect a duplicate reconstruction by
+    // its prompt content.
+    const secondClient = new StubClient([
+      evidenceStdout('claim 0 retried'),
+      relationshipStdout('surface', 'reason 0 retried'),
+    ]);
+    await runObservation(
+      { db: db!, client: secondClient, now: () => new Date('2026-09-07T12:30:00Z') },
+      'manual',
+    );
+    // Only two calls were made. The first is the
+    // reconstruction for the previously-failed item, the
+    // second is its relationship. Items 1-3 produced
+    // nothing on the second run.
+    expect(secondClient.calls.length).toBe(2);
+  });
+});

@@ -7,24 +7,28 @@
 //   2. Insert a `running` row into exhibit_observation_runs.
 //   3. For each fixed source, fetch the feed. Per-source
 //      failures are recorded; they do not abort the run.
-//   4. For each fetched item, INSERT OR IGNORE into
-//      exhibit_source_items. The UNIQUE(source_label,
-//      source_url) index is the dedup key; if `changes === 0`
-//      we have already processed this item and we skip the
-//      entire Evidence Reconstruction + Relationship Reasoning
-//      pipeline. This is the audit fix #1.
-//   5. For each truly new item, call Hermes once for Evidence
-//      Reconstruction; then once for Relationship Reasoning.
-//   6. Persist error summary on the run row even on partial
-//      failure. If we tried to process items but every one of
-//      them failed at the model / parse step, the run is
-//      marked `failed` rather than `succeeded` (audit fix #3).
-//   7. `new_relationship_count` counts only `surface` decisions
-//      (audit fix #4).
-//   8. Update the run row with the final status and counts.
+//   4. For each fetched item, walk the three stages of the
+//      pipeline and run only the stages that have not yet
+//      produced a row for this (source_label, source_url):
 //
-// All work happens inside one DB transaction per source item
-// so a partial failure leaves the DB in a consistent state.
+//        Stage 1 — exhibit_source_items (insert if missing)
+//        Stage 2 — exhibit_reconstructed_evidence
+//                  (run Evidence Reconstruction if missing)
+//        Stage 3 — exhibit_relationship_results
+//                  (run Relationship Reasoning if missing)
+//
+//      A successful earlier stage is never re-run. A
+//      transient failure on an earlier stage does not lose
+//      the item permanently — the next run will retry the
+//      missing stage and pick up where the last run stopped.
+//   5. Persist an error summary on the run row even on
+//      partial failure. A run that tried to process items
+//      and saw every one of them fail is marked `failed`
+//      rather than `succeeded` (audit fix #3).
+//   6. `new_relationship_count` counts only `surface`
+//      decisions among relationships actually inserted in
+//      this run (audit fix #4).
+//   7. Update the run row with the final status and counts.
 
 import { randomUUID } from 'node:crypto';
 import type { HermesClient, HermesOneShotRequest } from '../../runtime/hermes/types.js';
@@ -102,8 +106,8 @@ const FINISH_RUN_SQL = `
 `;
 // The dedup key is (source_label, source_url). We use
 // `INSERT OR IGNORE` so a previously-seen item is a no-op
-// (changes === 0) and the orchestrator can skip the model
-// pipeline entirely. `source_url` is the *article* URL; the
+// (changes === 0) and the orchestrator can re-use the
+// existing row. `source_url` is the *article* URL; the
 // originating feed URL is recorded separately in `feed_url`
 // for provenance and the UI.
 const INSERT_SOURCE_ITEM_SQL = `
@@ -119,7 +123,22 @@ const INSERT_RELATIONSHIP_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `;
 const LOOKUP_SOURCE_ITEM_SQL = `
-  SELECT id FROM exhibit_source_items WHERE source_label = ? AND source_url = ?
+  SELECT id, run_id, source_label, source_url, feed_url, captured_at, title, raw_excerpt, fetch_status, fetch_error
+  FROM exhibit_source_items
+  WHERE source_label = ? AND source_url = ?
+  LIMIT 1
+`;
+const LOOKUP_EVIDENCE_BY_SOURCE_ITEM_SQL = `
+  SELECT id, run_id, source_item_id, claim, implied_meaning, hypotheses_unknowns, created_at
+  FROM exhibit_reconstructed_evidence
+  WHERE source_item_id = ?
+  LIMIT 1
+`;
+const LOOKUP_RELATIONSHIP_BY_EVIDENCE_SQL = `
+  SELECT id, run_id, evidence_id, surface_decision, why_relevant, evidence_used, most_important_unknown, surfaced_at
+  FROM exhibit_relationship_results
+  WHERE evidence_id = ?
+  LIMIT 1
 `;
 
 interface ObservationDeps {
@@ -183,7 +202,7 @@ async function executeRunObservation(deps: ObservationDeps, kind: RunKind): Prom
       }
       for (const item of outcome.items) {
         itemsSeen += 1;
-        const result = await processNewItem(db, client, now, {
+        const result = await processItemStageAware(db, client, now, {
           runId,
           sourceLabel: source.label,
           feedUrl: source.url,
@@ -191,17 +210,19 @@ async function executeRunObservation(deps: ObservationDeps, kind: RunKind): Prom
         });
         if (result.error !== null) {
           itemErrors.push(result.error);
-          continue;
+          // Do NOT `continue` past the counters: a stage
+          // that succeeded earlier in the pipeline (e.g.
+          // the evidence stage) is still a real piece of
+          // new work, even if a later stage (e.g. the
+          // relationship stage) failed and will be retried
+          // on the next run.
         }
-        // Only items that the model pipeline actually ran for
-        // count toward newEvidenceCount. Dedup-skips return
-        // `processed: false` and are silent no-ops.
-        if (result.processed) {
+        if (result.newEvidence) {
           newEvidenceCount += 1;
+        }
+        if (result.newRelationship && result.surfaceDecision === 'surface') {
           // Audit fix #4: relationship count is surface-only.
-          if (result.surfaced === true) {
-            newRelationshipCount += 1;
-          }
+          newRelationshipCount += 1;
         }
       }
     }
@@ -255,15 +276,33 @@ interface ProcessItemInput {
 }
 
 interface ProcessItemResult {
-  /** null on success, dedup-skip, or model-throw. */
+  /** null on success, or a per-stage error message. */
   readonly error: string | null;
-  /** true only when the model pipeline ran for this item. */
-  readonly processed: boolean;
-  /** surface decision produced by Relationship Reasoning. */
-  readonly surfaced: boolean;
+  /** true iff a new evidence row was inserted in this call. */
+  readonly newEvidence: boolean;
+  /** true iff a new relationship row was inserted in this call. */
+  readonly newRelationship: boolean;
+  /** surface decision of the (newly inserted or existing) relationship. */
+  readonly surfaceDecision: 'surface' | 'do_not_surface';
 }
 
-async function processNewItem(
+/**
+ * Stage-aware item processor. Walks the three stages in order
+ * and runs only the stages that have not yet produced a row
+ * for this (source_label, source_url):
+ *
+ *   Stage 1 — exhibit_source_items (insert if missing)
+ *   Stage 2 — exhibit_reconstructed_evidence
+ *             (run Evidence Reconstruction if missing)
+ *   Stage 3 — exhibit_relationship_results
+ *             (run Relationship Reasoning if missing)
+ *
+ * A successful earlier stage is NEVER re-run. A transient
+ * failure on an earlier stage does not lose the item; the
+ * next run will retry the missing stage and pick up where
+ * the last run stopped.
+ */
+async function processItemStageAware(
   db: SqliteDatabase,
   client: HermesClient,
   now: () => Date,
@@ -271,17 +310,63 @@ async function processNewItem(
 ): Promise<ProcessItemResult> {
   const { runId, sourceLabel, feedUrl, item } = input;
 
-  // Dedup gate: the (source_label, source_url) pair is the
-  // stable identity of a real feed item. If a row already
-  // exists we MUST NOT re-call Hermes for it. The article URL
-  // is `item.url`; we never fall back to a fingerprint.
-  const existing = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as { id: string } | undefined;
-  if (existing !== undefined) {
-    // `processed: false` so the orchestrator does not count
-    // this item toward newEvidenceCount.
-    return { error: null, processed: false, surfaced: false };
+  // --- Stage 1: source_item ---------------------------------
+  const sourceItemRow = await ensureSourceItem(db, runId, sourceLabel, feedUrl, item, now);
+  if ('error' in sourceItemRow) {
+    return {
+      error: sourceItemRow.error,
+      newEvidence: false,
+      newRelationship: false,
+      surfaceDecision: 'do_not_surface',
+    };
   }
+  const sourceItemId = sourceItemRow.id;
 
+  // --- Stage 2: evidence ------------------------------------
+  const evidenceOutcome = await ensureEvidence(db, client, runId, sourceItemId, item, sourceLabel, now);
+  if ('error' in evidenceOutcome) {
+    return {
+      error: evidenceOutcome.error,
+      newEvidence: false,
+      newRelationship: false,
+      surfaceDecision: 'do_not_surface',
+    };
+  }
+  const { evidence: evidenceRow, newEvidence } = evidenceOutcome;
+
+  // --- Stage 3: relationship --------------------------------
+  const relationshipOutcome = await ensureRelationship(db, client, runId, evidenceRow, now);
+  if ('error' in relationshipOutcome) {
+    return {
+      error: relationshipOutcome.error,
+      newEvidence,
+      newRelationship: false,
+      surfaceDecision: 'do_not_surface',
+    };
+  }
+  return {
+    error: null,
+    newEvidence,
+    newRelationship: relationshipOutcome.newRelationship,
+    surfaceDecision: relationshipOutcome.surfaceDecision,
+  };
+}
+
+type EnsureOk<T> = T;
+type EnsureErr = { readonly error: string };
+
+async function ensureSourceItem(
+  db: SqliteDatabase,
+  runId: string,
+  sourceLabel: string,
+  feedUrl: string,
+  item: { readonly title: string; readonly url: string; readonly excerpt: string },
+  now: () => Date,
+): Promise<EnsureOk<SourceItemRow> | EnsureErr> {
+  const existing = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as SourceItemRow | undefined;
+  if (existing !== undefined) {
+    return existing;
+  }
   const sourceItemId = randomUUID();
   const insertResult = db.prepare(INSERT_SOURCE_ITEM_SQL).run(
     sourceItemId,
@@ -298,61 +383,107 @@ async function processNewItem(
   if (insertResult.changes === 0) {
     // Another concurrent writer beat us to this (source_label,
     // source_url). The single-process guard already prevents
-    // this, but the check stays in case a future change runs
-    // two workers; either way, do not re-call Hermes.
-    return { error: null, processed: false, surfaced: false };
+    // this in practice, but the check stays so the new code
+    // remains correct under a future second worker.
+    const reLookup = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as SourceItemRow | undefined;
+    if (reLookup === undefined) {
+      return { error: `item ${item.url}: source_item insert raced and no row visible` };
+    }
+    return reLookup;
   }
+  const created = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as SourceItemRow | undefined;
+  if (created === undefined) {
+    return { error: `item ${item.url}: source_item insert did not produce a readable row` };
+  }
+  return created;
+}
 
+interface EvidenceOutcome {
+  readonly evidence: EvidenceRow;
+  readonly newEvidence: boolean;
+}
+
+async function ensureEvidence(
+  db: SqliteDatabase,
+  client: HermesClient,
+  runId: string,
+  sourceItemId: string,
+  item: { readonly title: string; readonly url: string; readonly excerpt: string },
+  sourceLabel: string,
+  now: () => Date,
+): Promise<EvidenceOutcome | EnsureErr> {
+  const existing = db.prepare(LOOKUP_EVIDENCE_BY_SOURCE_ITEM_SQL).get(sourceItemId) as EvidenceRow | undefined;
+  if (existing !== undefined) {
+    return { evidence: existing, newEvidence: false };
+  }
+  let reconstructed;
   try {
-    const reconstructionPrompt = buildEvidenceReconstructionPrompt(
+    const prompt = buildEvidenceReconstructionPrompt(
       { title: item.title, url: item.url, excerpt: item.excerpt },
       sourceLabel,
     );
-    const reconstructed = await callModel(client, reconstructionPrompt, parseEvidenceReconstruction);
-
-    const evidenceId = randomUUID();
-    db.prepare(INSERT_EVIDENCE_SQL).run(
-      evidenceId,
-      runId,
-      sourceItemId,
-      reconstructed.directly_supported,
-      reconstructed.implied_meaning,
-      reconstructed.hypotheses_unknowns,
-      now().toISOString(),
-    );
-
-    const situation = readSituation(db).rawText;
-    const relationshipPrompt = buildRelationshipReasoningPrompt(situation, {
-      directlySupported: reconstructed.directly_supported,
-      impliedMeaning: reconstructed.implied_meaning,
-      hypothesesUnknowns: reconstructed.hypotheses_unknowns,
-    });
-    const reasoning = await callModel(client, relationshipPrompt, parseRelationshipReasoning);
-
-    db.prepare(INSERT_RELATIONSHIP_SQL).run(
-      randomUUID(),
-      runId,
-      evidenceId,
-      reasoning.surface_decision,
-      reasoning.why_relevant,
-      reasoning.evidence_used,
-      reasoning.most_important_unknown,
-      now().toISOString(),
-    );
-
-    return {
-      error: null,
-      processed: true,
-      surfaced: reasoning.surface_decision === 'surface',
-    };
+    reconstructed = await callModel(client, prompt, parseEvidenceReconstruction);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return {
-      error: `item ${item.url}: ${message}`,
-      processed: false,
-      surfaced: false,
-    };
+    return { error: `item ${item.url} (reconstruction): ${message}` };
   }
+  const evidenceId = randomUUID();
+  db.prepare(INSERT_EVIDENCE_SQL).run(
+    evidenceId,
+    runId,
+    sourceItemId,
+    reconstructed.directly_supported,
+    reconstructed.implied_meaning,
+    reconstructed.hypotheses_unknowns,
+    now().toISOString(),
+  );
+  const reLookup = db.prepare(LOOKUP_EVIDENCE_BY_SOURCE_ITEM_SQL).get(sourceItemId) as EvidenceRow | undefined;
+  if (reLookup === undefined) {
+    return { error: `item ${item.url}: evidence insert did not produce a readable row` };
+  }
+  return { evidence: reLookup, newEvidence: true };
+}
+
+interface RelationshipOutcome {
+  readonly newRelationship: boolean;
+  readonly surfaceDecision: 'surface' | 'do_not_surface';
+}
+
+async function ensureRelationship(
+  db: SqliteDatabase,
+  client: HermesClient,
+  runId: string,
+  evidence: EvidenceRow,
+  now: () => Date,
+): Promise<RelationshipOutcome | EnsureErr> {
+  const existing = db.prepare(LOOKUP_RELATIONSHIP_BY_EVIDENCE_SQL).get(evidence.id) as RelationshipRow | undefined;
+  if (existing !== undefined) {
+    return { newRelationship: false, surfaceDecision: existing.surface_decision };
+  }
+  let reasoning;
+  try {
+    const situation = readSituation(db).rawText;
+    const prompt = buildRelationshipReasoningPrompt(situation, {
+      directlySupported: evidence.claim,
+      impliedMeaning: evidence.implied_meaning,
+      hypothesesUnknowns: evidence.hypotheses_unknowns,
+    });
+    reasoning = await callModel(client, prompt, parseRelationshipReasoning);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `evidence ${evidence.id} (relationship): ${message}` };
+  }
+  db.prepare(INSERT_RELATIONSHIP_SQL).run(
+    randomUUID(),
+    runId,
+    evidence.id,
+    reasoning.surface_decision,
+    reasoning.why_relevant,
+    reasoning.evidence_used,
+    reasoning.most_important_unknown,
+    now().toISOString(),
+  );
+  return { newRelationship: true, surfaceDecision: reasoning.surface_decision };
 }
 
 function decideRunStatus(

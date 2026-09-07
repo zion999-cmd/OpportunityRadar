@@ -51,11 +51,15 @@ export const EXHIBIT_DDL: readonly string[] = [
      FOREIGN KEY (run_id) REFERENCES exhibit_observation_runs(id) ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS idx_exhibit_sources_run_id ON exhibit_source_items(run_id)`,
-  // Dedup key: the same (source_label, article URL) pair must
-  // never be processed twice. Subsequent runs that see the same
-  // item will INSERT OR IGNORE here and skip the entire
-  // Evidence Reconstruction + Relationship Reasoning pipeline.
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_exhibit_source_dedup ON exhibit_source_items(source_label, source_url)`,
+  // The unique dedup invariant is NOT created here. On a
+  // fresh DB it is fine, but on an old exhibit database
+  // (created before the audit fix) the source_url column
+  // stored the feed URL and the schema had no constraint,
+  // so the same (source_label, source_url) pair may appear
+  // many times. Creating the unique index before collapsing
+  // those duplicates would fail. The index is created in
+  // db.ts AFTER the old-DB dedup policy runs. See
+  // DEFENSIVE_INDEXES there.
 
   `CREATE TABLE IF NOT EXISTS exhibit_reconstructed_evidence (
      id                    TEXT PRIMARY KEY,
