@@ -429,3 +429,124 @@ describe('dedup recovery: stage-aware retry', () => {
     expect(secondClient.calls.length).toBe(2);
   });
 });
+
+// Empty-URL dedup boundary. fetch.ts allows public feed
+// items to have no <link> element, in which case
+// `extractItems` returns `url: ''`. The pre-fix orchestrator
+// used (source_label, source_url) as the dedup key, which
+// would have caused two distinct same-source items with no
+// URL to collide into one — the second was wrongly treated
+// as a duplicate of the first.
+//
+// The fix: the dedup key now lives on (source_label,
+// dedup_key). When the article URL is missing, dedup_key is
+// `fallback:<sha256-of-source-label-title-excerpt>` — a
+// deterministic hash of the item's content, not the feed
+// URL. The user-visible source_url stays empty, never
+// faked.
+//
+// This block verifies the behavior end-to-end: a feed that
+// produces two distinct same-source items with empty URLs
+// must process BOTH on the first run, and make ZERO model
+// calls on a second identical run.
+describe('dedup identity: empty-URL fallback', () => {
+  it('processes two distinct same-source items with empty URLs on the first run, and makes zero model calls on the second run', async () => {
+    // Replace the default fetch mock for this test only:
+    //   - github-engineering returns 2 items, NEITHER with a
+    //     <link> element. Each item has a distinct title
+    //     and excerpt.
+    //   - all other sources return an empty channel so the
+    //     fetcher records a per-source error and the run
+    //     continues.
+    const githubSource = FIXED_SOURCES.find((s) => s.id === 'github-engineering');
+    if (githubSource === undefined) throw new Error('test setup: github-engineering source missing');
+    const noLinkRssFor = (title: string, excerpt: string) => `<?xml version="1.0"?>
+<rss><channel>
+  <item>
+    <title>${title}</title>
+    <description>${excerpt}</description>
+  </item>
+</channel></rss>`;
+    const emptyRss = `<?xml version="1.0"?>
+<rss><channel></channel></rss>`;
+    const gh1Title = 'no-link postmortem alpha';
+    const gh1Excerpt = 'excerpt alpha';
+    const gh2Title = 'no-link postmortem bravo';
+    const gh2Excerpt = 'excerpt bravo';
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+      if (u === githubSource.url) {
+        return new Response(
+          noLinkRssFor(gh1Title, gh1Excerpt) + noLinkRssFor(gh2Title, gh2Excerpt),
+          { status: 200, headers: { 'content-type': 'application/rss+xml' } },
+        );
+      }
+      return new Response(emptyRss, {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml' },
+      });
+    }) as typeof fetch;
+
+    // First run: queue is 2 items × 2 calls = 4 outputs.
+    // 3 sources fail to produce items and are recorded as
+    // per-source errors. The run still succeeds because
+    // newEvidenceCount > 0.
+    const firstClient = new StubClient(queueFor(2, 'surface'));
+    const first = await runObservation(
+      { db: db!, client: firstClient, now: () => new Date('2026-09-08T12:00:00Z') },
+      'manual',
+    );
+    expect(first.status).toBe('succeeded');
+    // Two distinct items both produced evidence, both
+    // surfaced. This is the new behavior: previously the
+    // second item would have been silently dropped.
+    expect(first.newEvidenceCount).toBe(2);
+    expect(first.newRelationshipCount).toBe(2);
+    expect(firstClient.calls.length).toBe(4);
+
+    // Second run: identical inputs, but the dedup hit must
+    // skip both items. The stub has NO queued outputs; if
+    // the dedup is broken, the run will try to drain the
+    // empty queue and throw.
+    const secondClient = new StubClient([]);
+    const second = await runObservation(
+      { db: db!, client: secondClient, now: () => new Date('2026-09-08T12:30:00Z') },
+      'manual',
+    );
+    expect(second.status).toBe('succeeded');
+    expect(second.newEvidenceCount).toBe(0);
+    expect(second.newRelationshipCount).toBe(0);
+    // Crucial: zero model calls on the second run.
+    expect(secondClient.calls.length).toBe(0);
+
+    // The user-visible source_url must NOT be faked with
+    // the fallback identity. The two rows should have
+    // source_url='' and dedup_key starting with 'fallback:'.
+    const rows = db!
+      .prepare(
+        `SELECT source_label, source_url, dedup_key, title
+         FROM exhibit_source_items
+         WHERE source_label = ?
+         ORDER BY title`,
+      )
+      .all(githubSource.label) as Array<{
+      source_label: string;
+      source_url: string;
+      dedup_key: string;
+      title: string | null;
+    }>;
+    expect(rows.length).toBe(2);
+    for (const row of rows) {
+      // User-visible URL stays empty. The user can see
+      // "this feed item had no link of its own" rather
+      // than being shown a hash.
+      expect(row.source_url).toBe('');
+      // Internal dedup_key uses the fallback scheme, not
+      // the empty string and not a fake URL.
+      expect(row.dedup_key.startsWith('fallback:')).toBe(true);
+    }
+    // The two dedup_keys must be distinct — otherwise the
+    // unique index would have collapsed them.
+    expect(rows[0]?.dedup_key).not.toBe(rows[1]?.dedup_key);
+  });
+});

@@ -33,10 +33,27 @@
 //      source_item without re-attaching its evidence would
 //      destroy the (otherwise valid) evidence/relationship
 //      content.
-//   3. Once duplicates are collapsed, create the unique
-//      index on (source_label, source_url). This is the
-//      dedup invariant the new orchestrator relies on. The
-//      step is idempotent: subsequent opens of an already-
+//   3. Add the `dedup_key` column (idempotent). This is
+//      the orchestrator's internal identity that handles
+//      the "feed item has no <link>" case: when the
+//      article URL is missing, dedup_key is a SHA-256 of
+//      (source_label + title + excerpt) instead of the
+//      empty URL. Two distinct same-source items with no
+//      URL therefore do not collapse into one. The
+//      user-visible `source_url` is never faked.
+//   4. Backfill `dedup_key` for existing rows. The pre-
+//      dedup-key schema stored the article URL (or the
+//      old feed URL) in `source_url`, so backfilling from
+//      `source_url` preserves the previous dedup identity
+//      for the existing data set.
+//   5. Drop the legacy `idx_exhibit_source_dedup` index
+//      (which was on `source_url`) idempotently. The new
+//      index lives on (source_label, dedup_key).
+//   6. Create the unique index
+//      `idx_exhibit_source_dedup_key` on
+//      (source_label, dedup_key). This is the dedup
+//      invariant the new orchestrator relies on. The step
+//      is idempotent: subsequent opens of an already-
 //      migrated database are no-ops.
 //
 // The old source_url values are NOT migrated to feed_url.
@@ -72,11 +89,17 @@ function applyExhibitDdl(db: SqliteDatabase): void {
 //    swallow the "duplicate column" error, which is the
 //    documented SQLite signal that the column already
 //    exists.
-// 2. Collapse pre-existing (source_label, source_url)
+// 2. Add the `dedup_key` column (idempotent — same swallow
+//    pattern).
+// 3. Collapse pre-existing (source_label, source_url)
 //    duplicates so the unique dedup invariant can be
 //    created. See the file header for the full policy.
-// 3. Create the unique dedup index. Safe to run because
-//    step 2 already removed the duplicates.
+// 4. Backfill `dedup_key` for existing rows from
+//    `source_url`.
+// 5. Drop the legacy `idx_exhibit_source_dedup` index
+//    idempotently.
+// 6. Create the new unique dedup index on
+//    (source_label, dedup_key).
 function applyDefensiveMigrations(db: SqliteDatabase): void {
   for (const stmt of DEFENSIVE_MIGRATIONS) {
     try {
@@ -89,6 +112,8 @@ function applyDefensiveMigrations(db: SqliteDatabase): void {
     }
   }
   applyOldSourceItemDedupPolicy(db);
+  backfillDedupKey(db);
+  dropLegacyDedupIndex(db);
   for (const stmt of DEFENSIVE_INDEXES) {
     try {
       db.exec(stmt);
@@ -103,10 +128,20 @@ function applyDefensiveMigrations(db: SqliteDatabase): void {
 
 const DEFENSIVE_MIGRATIONS: readonly string[] = [
   `ALTER TABLE exhibit_source_items ADD COLUMN feed_url TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE exhibit_source_items ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''`,
 ];
 
+// The new unique dedup invariant lives on
+// (source_label, dedup_key). `dedup_key` is set by the
+// orchestrator to either `url:<article_url>` (when the
+// article URL is present) or `fallback:<sha256-of-
+// source-label-title-excerpt>` (when the article URL is
+// missing). The legacy index on (source_label, source_url)
+// is dropped one-time in `dropLegacyDedupIndex` so we can
+// reuse the canonical name without re-creating it on every
+// open.
 const DEFENSIVE_INDEXES: readonly string[] = [
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_exhibit_source_dedup ON exhibit_source_items(source_label, source_url)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_exhibit_source_dedup_key ON exhibit_source_items(source_label, dedup_key)`,
 ];
 
 // Find every (source_label, source_url) group with more
@@ -152,4 +187,37 @@ function applyOldSourceItemDedupPolicy(db: SqliteDatabase): void {
       deleteSourceItem.run(dup.id);
     }
   }
+}
+
+// For existing rows from before the dedup_key column
+// existed, set dedup_key = source_url. The pre-dedup-key
+// orchestrator wrote the article URL (or, for very old
+// rows, the feed URL) into source_url. Backfilling from
+// source_url preserves the previous dedup identity for the
+// existing data set, so re-running the orchestrator on a
+// freshly-migrated DB does not suddenly re-process
+// already-known items.
+//
+// Rows that the orchestrator has already inserted after
+// this fix has shipped have a non-empty dedup_key (set by
+// `buildDedupKey`) and are unaffected by the WHERE clause.
+function backfillDedupKey(db: SqliteDatabase): void {
+  db.exec(
+    `UPDATE exhibit_source_items
+     SET dedup_key = source_url
+     WHERE dedup_key = ''`,
+  );
+}
+
+// One-time cleanup of the legacy unique index from the
+// previous fix. That index was on (source_label, source_url)
+// and used the same name. The new index lives on
+// (source_label, dedup_key) under a different name
+// (`idx_exhibit_source_dedup_key`) so it is not affected
+// by this drop. The drop is idempotent: if the legacy
+// index never existed (fresh DB), DROP IF EXISTS is a
+// no-op; if a re-open runs again, the legacy index is
+// already gone.
+function dropLegacyDedupIndex(db: SqliteDatabase): void {
+  db.exec(`DROP INDEX IF EXISTS idx_exhibit_source_dedup`);
 }

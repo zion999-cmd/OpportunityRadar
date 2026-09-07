@@ -30,7 +30,7 @@
 //      this run (audit fix #4).
 //   7. Update the run row with the final status and counts.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { HermesClient, HermesOneShotRequest } from '../../runtime/hermes/types.js';
 import type { SqliteDatabase } from '../../storage/connection.js';
 import { fetchSource } from './fetch.js';
@@ -104,15 +104,27 @@ const FINISH_RUN_SQL = `
   SET status = ?, completed_at = ?, new_evidence_count = ?, new_relationship_count = ?, error_message = ?
   WHERE id = ?
 `;
-// The dedup key is (source_label, source_url). We use
+// The dedup key is (source_label, dedup_key). We use
 // `INSERT OR IGNORE` so a previously-seen item is a no-op
 // (changes === 0) and the orchestrator can re-use the
-// existing row. `source_url` is the *article* URL; the
-// originating feed URL is recorded separately in `feed_url`
-// for provenance and the UI.
+// existing row.
+//
+// `dedup_key` is the INTERNAL identity used by the
+// orchestrator. It is one of:
+//   - `url:<article_url>`  — when the article URL is present
+//   - `fallback:<sha256>`  — when the article URL is missing
+//     (some public feed items do not expose a <link>)
+//     The hash is over (source_label + title + excerpt),
+//     so two distinct same-source items with no URL do
+//     NOT collapse into one.
+//
+// `source_url` is the user-visible article URL (or '' for
+// items without one). It is never faked with the fallback
+// identity: the user can still see "this feed item had no
+// link of its own" rather than being shown a hash.
 const INSERT_SOURCE_ITEM_SQL = `
-  INSERT OR IGNORE INTO exhibit_source_items (id, run_id, source_label, source_url, feed_url, captured_at, title, raw_excerpt, fetch_status, fetch_error)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT OR IGNORE INTO exhibit_source_items (id, run_id, source_label, source_url, feed_url, dedup_key, captured_at, title, raw_excerpt, fetch_status, fetch_error)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 const INSERT_EVIDENCE_SQL = `
   INSERT INTO exhibit_reconstructed_evidence (id, run_id, source_item_id, claim, implied_meaning, hypotheses_unknowns, created_at)
@@ -125,7 +137,7 @@ const INSERT_RELATIONSHIP_SQL = `
 const LOOKUP_SOURCE_ITEM_SQL = `
   SELECT id, run_id, source_label, source_url, feed_url, captured_at, title, raw_excerpt, fetch_status, fetch_error
   FROM exhibit_source_items
-  WHERE source_label = ? AND source_url = ?
+  WHERE source_label = ? AND dedup_key = ?
   LIMIT 1
 `;
 const LOOKUP_EVIDENCE_BY_SOURCE_ITEM_SQL = `
@@ -363,7 +375,8 @@ async function ensureSourceItem(
   item: { readonly title: string; readonly url: string; readonly excerpt: string },
   now: () => Date,
 ): Promise<EnsureOk<SourceItemRow> | EnsureErr> {
-  const existing = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as SourceItemRow | undefined;
+  const dedupKey = buildDedupKey(item, sourceLabel);
+  const existing = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, dedupKey) as SourceItemRow | undefined;
   if (existing !== undefined) {
     return existing;
   }
@@ -374,6 +387,7 @@ async function ensureSourceItem(
     sourceLabel,
     item.url,
     feedUrl,
+    dedupKey,
     now().toISOString(),
     item.title,
     item.excerpt,
@@ -382,20 +396,52 @@ async function ensureSourceItem(
   );
   if (insertResult.changes === 0) {
     // Another concurrent writer beat us to this (source_label,
-    // source_url). The single-process guard already prevents
+    // dedup_key). The single-process guard already prevents
     // this in practice, but the check stays so the new code
     // remains correct under a future second worker.
-    const reLookup = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as SourceItemRow | undefined;
+    const reLookup = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, dedupKey) as SourceItemRow | undefined;
     if (reLookup === undefined) {
       return { error: `item ${item.url}: source_item insert raced and no row visible` };
     }
     return reLookup;
   }
-  const created = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, item.url) as SourceItemRow | undefined;
+  const created = db.prepare(LOOKUP_SOURCE_ITEM_SQL).get(sourceLabel, dedupKey) as SourceItemRow | undefined;
   if (created === undefined) {
     return { error: `item ${item.url}: source_item insert did not produce a readable row` };
   }
   return created;
+}
+
+// Build the internal dedup identity for a fetched item.
+//
+//   URL present → `url:<article_url>`
+//   URL missing → `fallback:<sha256-of-source-label-title-excerpt>`
+//
+// The fallback uses the SOURCE identity (label) plus the
+// item's title and excerpt, NOT the feed URL. The feed URL
+// is a property of the source, not the item, and would
+// collapse all items from the same feed into one.
+//
+// This is deterministic — two runs over the same item
+// produce the same dedup_key, so the second run is a no-op
+// (INSERT OR IGNORE returns changes === 0) and the
+// evidence/relationship stages are skipped.
+//
+// It is NOT semantic dedup. There is no model call, no
+// embedding, no similarity comparison. Two items that share
+// source, title, AND excerpt are treated as the same item;
+// that is the limit the user asked for.
+function buildDedupKey(
+  item: { readonly title: string; readonly url: string; readonly excerpt: string },
+  sourceLabel: string,
+): string {
+  if (item.url.length > 0) {
+    return `url:${item.url}`;
+  }
+  const hash = createHash('sha256')
+    .update(`${sourceLabel}\n${item.title}\n${item.excerpt}`)
+    .digest('hex');
+  return `fallback:${hash}`;
 }
 
 interface EvidenceOutcome {

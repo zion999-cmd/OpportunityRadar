@@ -43,6 +43,16 @@ export const EXHIBIT_DDL: readonly string[] = [
      source_label  TEXT NOT NULL,
      source_url    TEXT NOT NULL,
      feed_url      TEXT NOT NULL DEFAULT '',
+     -- dedup_key is the internal identity used by the
+     -- unique dedup index. The user-visible article URL
+     -- is source_url (which can be empty for feed items
+     -- that have no link element); the dedup_key extends
+     -- that identity with a deterministic fallback hash
+     -- of (source_label + title + excerpt) so two distinct
+     -- same-source items with no URL do not collapse into
+     -- one. See observation.ts buildDedupKey and db.ts
+     -- DEFENSIVE_INDEXES.
+     dedup_key     TEXT NOT NULL DEFAULT '',
      captured_at   TEXT NOT NULL,
      title         TEXT,
      raw_excerpt   TEXT NOT NULL,
@@ -51,15 +61,17 @@ export const EXHIBIT_DDL: readonly string[] = [
      FOREIGN KEY (run_id) REFERENCES exhibit_observation_runs(id) ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS idx_exhibit_sources_run_id ON exhibit_source_items(run_id)`,
-  // The unique dedup invariant is NOT created here. On a
-  // fresh DB it is fine, but on an old exhibit database
-  // (created before the audit fix) the source_url column
-  // stored the feed URL and the schema had no constraint,
-  // so the same (source_label, source_url) pair may appear
-  // many times. Creating the unique index before collapsing
-  // those duplicates would fail. The index is created in
-  // db.ts AFTER the old-DB dedup policy runs. See
-  // DEFENSIVE_INDEXES there.
+  // The unique dedup invariant is NOT created here. The
+  // index lives on (source_label, dedup_key); dedup_key
+  // is the orchestrator's internal identity that
+  // distinguishes two same-source items even when both
+  // have an empty source_url. On a fresh DB the index is
+  // fine, but on an old exhibit database (created before
+  // the audit fix) the source_url column stored the feed
+  // URL and the schema had no constraint, so duplicate
+  // rows may exist. The index is created in db.ts AFTER
+  // the old-DB dedup policy runs. See DEFENSIVE_INDEXES
+  // there.
 
   `CREATE TABLE IF NOT EXISTS exhibit_reconstructed_evidence (
      id                    TEXT PRIMARY KEY,

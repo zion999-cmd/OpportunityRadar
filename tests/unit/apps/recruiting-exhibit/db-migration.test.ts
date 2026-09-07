@@ -8,17 +8,23 @@
 //     title, raw_excerpt, fetch_status, fetch_error
 //   )
 //
-// with no `feed_url` column and no UNIQUE index on
-// (source_label, source_url). Worse, the pre-fix code
-// stored the FEED URL in `source_url` (because that was the
-// only URL column available), so repeated runs over the
-// same feed inserted the same (source_label, source_url)
-// pair many times.
+// with no `feed_url` column, no `dedup_key` column, and no
+// UNIQUE index on (source_label, source_url). Worse, the
+// pre-fix code stored the FEED URL in `source_url` (because
+// that was the only URL column available), so repeated runs
+// over the same feed inserted the same (source_label,
+// source_url) pair many times.
 //
 // The current `openExhibitDatabase()` must be able to open
 // such a database without error and end with the unique
 // dedup invariant in place. The migration policy is
-// documented in `apps/recruiting-exhibit/db.ts`.
+// documented in `apps/recruiting-exhibit/db.ts`. The
+// post-migration unique index is on
+// (source_label, dedup_key). For pre-migration rows,
+// `dedup_key` is backfilled from `source_url` (the only
+// URL available), so a freshly-migrated old DB is
+// effectively unique on the same (label, source_url) pair
+// the old orchestrator was using.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -81,11 +87,15 @@ describe('exhibit db migration from old shape', () => {
     const migratedDb = openExhibitDatabase(dbPath);
     try {
       // 4. Verify the unique dedup invariant: a new attempt
-      //    to insert the same (label, source_url) pair must
-      //    now fail with a UNIQUE constraint violation.
+      //    to insert the same (label, dedup_key) pair must
+      //    now fail with a UNIQUE constraint violation. The
+      //    pre-fix rows had their `dedup_key` backfilled
+      //    from `source_url` (the only URL available), so
+      //    re-using the old source_url as the new dedup_key
+      //    exercises the backfill policy.
       const insertAgain = migratedDb.prepare(
-        `INSERT INTO exhibit_source_items (id, run_id, source_label, source_url, feed_url, captured_at, title, raw_excerpt, fetch_status, fetch_error)
-         VALUES ('new', 'r2', 'github-engineering', 'https://github.blog/engineering/feed/', 'https://github.blog/engineering/feed/', '2026-09-04T00:00:00Z', 'a', 'a-excerpt', 'ok', NULL)`,
+        `INSERT INTO exhibit_source_items (id, run_id, source_label, source_url, feed_url, dedup_key, captured_at, title, raw_excerpt, fetch_status, fetch_error)
+         VALUES ('new', 'r2', 'github-engineering', 'https://github.blog/engineering/feed/', 'https://github.blog/engineering/feed/', 'https://github.blog/engineering/feed/', '2026-09-04T00:00:00Z', 'a', 'a-excerpt', 'ok', NULL)`,
       );
       expect(() => insertAgain.run()).toThrow();
 
