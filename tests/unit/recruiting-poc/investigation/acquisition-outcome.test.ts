@@ -92,8 +92,10 @@ describe('acquisition outcome ingest', () => {
     expect(prompt).toContain(rawContent);
     expect(prompt).toContain('ORIGINAL person and employer evidence');
     expect(prompt).toContain('do not normalize it into a candidate profile, skill, score, or taxonomy');
-    expect(prompt).toContain('EVIDENCE_NOT_FOUND means');
-    expect(prompt).toContain('does NOT mean the underlying capability does not exist');
+    // The frozen EVIDENCE_NOT_FOUND principle: not evidence that
+    // the capability is absent, but a bounded acquisition may still
+    // provide negative information.
+    expect(prompt).toContain('EVIDENCE_NOT_FOUND is not evidence that the underlying capability is absent');
   });
 
   it.each(['surface_worth_exploring', 'surface_uncertain', 'do_not_surface'])('accepts the existing product outcome %s', async (outcome) => {
@@ -144,5 +146,80 @@ describe('acquisition outcome ingest', () => {
     expect(failure?.error.length).toBeGreaterThan(0);
     expect(failure?.stateBefore.acquisitionOutcome?.verdict).toBe('EVIDENCE_NOT_FOUND');
     expect(failure?.stateBefore.stage).toBe('awaiting_acquisition');
+  });
+});
+
+describe('EVIDENCE_NOT_FOUND epistemic rule in acquisition reevaluation prompt', () => {
+  // The acquisition reevaluation prompt must carry the frozen
+  // EVIDENCE_NOT_FOUND principle: not evidence that the capability
+  // is absent, but the bounded acquisition may still provide
+  // negative information and the model is allowed to update the
+  // relationship accordingly. It must NOT contain the previous
+  // unconditional "do not penalize" or "evidence of absence"
+  // conversion wording.
+  it('does not contain the prohibited "evidence of absence" conversion or unconditional "do not penalize" wording', async () => {
+    const client = new Stub([result('surface_uncertain')]);
+    const runtime = new RelationshipInvestigation(awaitingAcquisitionWithPlan(), client);
+    await runtime.submitAcquisitionOutcome(notFoundIngest);
+    const prompt = client.calls[0]?.prompt ?? '';
+    // The previous wording forbade the model from "converting
+    // absence of discovered public evidence into evidence of
+    // absence" and from "penaliz[ing] the relationship merely
+    // because the route terminated as unresolved." Both are gone.
+    expect(prompt).not.toContain('evidence of absence');
+    expect(prompt).not.toContain('Do not penalize');
+    expect(prompt).not.toContain('merely because the route terminated as unresolved');
+  });
+
+  it('carries the frozen EVIDENCE_NOT_FOUND principle verbatim', async () => {
+    const client = new Stub([result('surface_uncertain')]);
+    const runtime = new RelationshipInvestigation(awaitingAcquisitionWithPlan(), client);
+    await runtime.submitAcquisitionOutcome(notFoundIngest);
+    const prompt = client.calls[0]?.prompt ?? '';
+    // The new rule is positive and explicit: EVIDENCE_NOT_FOUND is
+    // not proof of absence, but a bounded acquisition may still
+    // carry negative information, and the model is allowed to
+    // update the relationship accordingly. The two boundary
+    // instructions ("do not treat as automatic failure", "do not
+    // treat it as zero information") close both halves of the
+    // failure mode the previous wording conflated.
+    expect(prompt).toContain('EVIDENCE_NOT_FOUND is not evidence that the underlying capability is absent');
+    expect(prompt).toContain('a bounded acquisition may still provide negative information');
+    // The four informativeness signals are wrapped across lines in
+    // the prompt; assert each one is present and contiguous.
+    expect(prompt).toMatch(/coverage,\s+source reachability,\s+specificity of what was/);
+    expect(prompt).toMatch(/concrete missing links/);
+    expect(prompt).toContain('update the relationship accordingly');
+    expect(prompt).toContain('Do not treat EVIDENCE_NOT_FOUND as automatic failure');
+    expect(prompt).toContain('Do not treat it as zero information');
+    // No numeric confidence or deterministic weighting introduced.
+    expect(prompt).not.toMatch(/\bconfidence\b/i);
+    expect(prompt).not.toMatch(/\bweight(?:ing)?\b/i);
+  });
+
+  it('allows the model to update the relationship downward on informative EVIDENCE_NOT_FOUND', async () => {
+    // The frozen principle explicitly permits a downward update
+    // when the bounded acquisition is informative (e.g. concrete
+    // missing links). This test pins the runtime contract: with
+    // EVIDENCE_NOT_FOUND the model is not deterministically
+    // pinned to surface_worth_exploring or surface_uncertain; it
+    // can also produce do_not_surface.
+    const client = new Stub([result('do_not_surface')]);
+    const runtime = new RelationshipInvestigation(awaitingAcquisitionWithPlan(), client);
+    const state = await runtime.submitAcquisitionOutcome(notFoundIngest);
+    expect(state.acquisitionOutcome?.verdict).toBe('EVIDENCE_NOT_FOUND');
+    expect(state.reevaluationResult?.outcome).toBe('do_not_surface');
+  });
+
+  it('still allows the model to remain at surface_worth_exploring on uninformative EVIDENCE_NOT_FOUND', async () => {
+    // The frozen principle is not a forced downgrade either. An
+    // uninformative EVIDENCE_NOT_FOUND (e.g. empty coverage, no
+    // concrete missing links) must still be allowed to leave the
+    // relationship at surface_worth_exploring.
+    const client = new Stub([result('surface_worth_exploring')]);
+    const runtime = new RelationshipInvestigation(awaitingAcquisitionWithPlan(), client);
+    const state = await runtime.submitAcquisitionOutcome(notFoundIngest);
+    expect(state.acquisitionOutcome?.verdict).toBe('EVIDENCE_NOT_FOUND');
+    expect(state.reevaluationResult?.outcome).toBe('surface_worth_exploring');
   });
 });

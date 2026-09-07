@@ -76,9 +76,9 @@ ORIGINAL EVIDENCE
 ${state.originalEvidence}
 ---
 
-Determine what evidence would resolve or materially change this unknown, who or what could legitimately supply it, the appropriate route to obtain it, and the next acquisition action. These must be natural-language semantic descriptions, not taxonomy labels. Do not invent the evidence, browse, contact anyone, perform acquisition, or reevaluate the relationship. The current user is merely operating this runtime: do not assume they are the evidence holder. A humanQuestion may be supplied only if the current user is specifically established by the provided evidence as an appropriate holder; otherwise currentUserIsAppropriateEvidenceHolder must be false and humanQuestion must be null. acquisitionAction must describe the legitimate next action without impersonating or directly addressing an absent holder.
+Determine what evidence would resolve or materially change this unknown, who or what could legitimately supply it, the appropriate route to obtain it, and the next acquisition action. These must be natural-language semantic descriptions, not taxonomy labels. Do not invent the evidence, browse, contact anyone, perform acquisition, or reevaluate the relationship. The current user is operating this runtime; decide from the provided evidence alone whether the current user is the appropriate evidence holder. If the evidence specifically establishes the current user as the appropriate holder, currentUserIsAppropriateEvidenceHolder must be true and humanQuestion must be a non-empty natural-language question that, if answered, would resolve or materially change the decisive unknown. Otherwise currentUserIsAppropriateEvidenceHolder must be false and humanQuestion must be null. acquisitionAction must describe the legitimate next action without impersonating or directly addressing an absent holder. Preserve recipientJustification in either branch.
 
-On the last line output one strict JSON object with exactly: {"requiredEvidence":"...","evidenceHolder":"...","acquisitionRoute":"...","acquisitionAction":"...","currentUserIsAppropriateEvidenceHolder":false,"recipientJustification":"...","humanQuestion":null}`;
+On the last line output one strict JSON object with exactly: {"requiredEvidence":"...","evidenceHolder":"...","acquisitionRoute":"...","acquisitionAction":"...","currentUserIsAppropriateEvidenceHolder":<true|false>,"recipientJustification":"...","humanQuestion":"<non-empty when currentUserIsAppropriateEvidenceHolder is true, otherwise null>"}`;
 }
 
 export function buildAcquisitionReevaluationPrompt(state: InvestigationState): string {
@@ -95,8 +95,16 @@ export function buildAcquisitionReevaluationPrompt(state: InvestigationState): s
 
 ${METHOD}
 
-EPISTEMIC RULE — read carefully:
-The acquisition outcome is one of EVIDENCE_FOUND or EVIDENCE_NOT_FOUND. EVIDENCE_NOT_FOUND means the bounded public acquisition did not establish the required transfer evidence; it does NOT mean the underlying capability does not exist. Do not convert absence of discovered public evidence into evidence of absence. Do not penalize the relationship merely because the route terminated as unresolved.
+EPISTEMIC RULE — read carefully (frozen):
+EVIDENCE_NOT_FOUND is not evidence that the underlying capability is absent.
+
+However, a bounded acquisition may still provide negative information.
+Assess how informative the failure to find evidence is from the supplied acquisition
+result itself — including coverage, source reachability, specificity of what was
+sought, and concrete missing links — and update the relationship accordingly.
+
+Do not treat EVIDENCE_NOT_FOUND as automatic failure.
+Do not treat it as zero information.
 
 RELATIONSHIP CANDIDATE
 ${JSON.stringify(state.relationshipCandidate, null, 2)}

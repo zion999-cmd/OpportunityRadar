@@ -191,12 +191,18 @@ downgrade, or reject.
 
 ### 3.3 EVIDENCE_NOT_FOUND ≠ evidence of absence
 
-**VERIFIED BY POC.** Both reevaluation prompts
-(`buildReevaluationPrompt` and `buildAcquisitionReevaluationPrompt`)
-and both acquisition-result files explicitly carry this rule. The
-P004 reevaluation and the P012 reevaluation each used the rule to
-avoid penalizing the relationship for the bounded acquisition's
-unresolved route.
+**VERIFIED BY POC.** The acquisition reevaluation prompt
+(`buildAcquisitionReevaluationPrompt`) and both acquisition-result
+files explicitly carry the frozen principle: `EVIDENCE_NOT_FOUND`
+is not evidence that the underlying capability is absent, but a
+bounded acquisition may still provide negative information and the
+model is allowed to update the relationship accordingly. The
+prompt does not forbid a downward update (EVIDENCE_NOT_FOUND is
+not zero information) and does not require one (EVIDENCE_NOT_FOUND
+is not automatic failure). The P004 reevaluation and the P012
+reevaluation each used the rule to avoid treating
+EVIDENCE_NOT_FOUND as automatic failure while still leaving the
+model free to downgrade on informative missing links.
 
 ### 3.4 Acquisition outcome may still provide negative information
 
@@ -312,21 +318,23 @@ by the same prompt; they share no template and no taxonomy.
     [research/semantic-native/real-evidence/p012-acquisition-01/acquisition-log.md](research/semantic-native/real-evidence/p012-acquisition-01/acquisition-log.md)
     and is part of why EVIDENCE_NOT_FOUND is **not** treated as
     proof of absence.
-12. **Mechanical artifact-naming bug.** The
+12. **Mechanical artifact-naming bug (now fixed).** The
     `writeInvestigationArtifact` helper in
-    [matching/recruiting-poc/investigation/artifact.ts](matching/recruiting-poc/investigation/artifact.ts) writes a
-    fixed-filename `_p004-patch-investigation.json` regardless
-    of the `relationshipCandidate.personId`. The P012 run
-    therefore lives at
+    [matching/recruiting-poc/investigation/artifact.ts](matching/recruiting-poc/investigation/artifact.ts) was
+    originally a fixed-filename `_p004-patch-investigation.json`
+    regardless of the `relationshipCandidate.personId`, and the
+    P012 run therefore lived at
     `artifacts/recruiting-poc/investigation/2026-09-07T11-59-34-815Z_p004-patch-investigation.json`
     and
     `artifacts/recruiting-poc/investigation/2026-09-07T12-48-33-560Z_p004-patch-investigation.json`,
-    even though the file body is the P012 × Patch state. The
-    P012 reevaluation CLI guards on
-    `relationshipCandidate.personId === 'P012'` to confirm
-    it is loading the right file. This is recorded here as a
-    known mechanical artifact-naming bug and is **not** fixed
-    in this audit task.
+    even though the file body was the P012 × Patch state. The
+    helper has since been updated to derive the filename slug
+    from the runtime state's `personId` and `employerId`, and a
+    focused test in
+    [tests/unit/recruiting-poc/investigation/artifact-filenames.test.ts](tests/unit/recruiting-poc/investigation/artifact-filenames.test.ts)
+    pins the new behavior. The two P012 paths above are the
+    historical record of the original filenames; new runs
+    produce distinct, person-id-derived filenames.
 
 ## 5. P004 vs P012 — observed generalization
 

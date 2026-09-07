@@ -86,7 +86,23 @@ export class RelationshipInvestigation {
     const result = await this.client.oneShot({ prompt: buildAcquisitionPlanPrompt(stateBefore), safeMode: true });
     try {
       const plan = parseAcquisitionPlan(result.stdout);
-      this.state = { ...stateBefore, acquisitionPlan: plan };
+      // Routing branch:
+      //   currentUserIsAppropriateEvidenceHolder = false
+      //     → remain in awaiting_acquisition; humanQuestion is null.
+      //   currentUserIsAppropriateEvidenceHolder = true
+      //     → transition to awaiting_investigation_evidence;
+      //       preserve the human question for raw-answer submission;
+      //       rawAnswer remains empty.
+      if (plan.currentUserIsAppropriateEvidenceHolder) {
+        this.state = {
+          ...stateBefore,
+          stage: 'awaiting_investigation_evidence',
+          acquisitionPlan: plan,
+          investigationEvidence: { question: plan.humanQuestion, rawAnswer: '' },
+        };
+      } else {
+        this.state = { ...stateBefore, acquisitionPlan: plan };
+      }
       return this.state;
     } catch (error) {
       this.fail('acquisition_planning', result.stdout, error, stateBefore);
