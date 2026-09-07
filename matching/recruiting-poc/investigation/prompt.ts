@@ -78,7 +78,13 @@ ${state.originalEvidence}
 
 Determine what evidence would resolve or materially change this unknown, who or what could legitimately supply it, the appropriate route to obtain it, and the next acquisition action. These must be natural-language semantic descriptions, not taxonomy labels. Do not invent the evidence, browse, contact anyone, perform acquisition, or reevaluate the relationship. The current user is operating this runtime; decide from the provided evidence alone whether the current user is the appropriate evidence holder. If the evidence specifically establishes the current user as the appropriate holder, currentUserIsAppropriateEvidenceHolder must be true and humanQuestion must be a non-empty natural-language question that, if answered, would resolve or materially change the decisive unknown. Otherwise currentUserIsAppropriateEvidenceHolder must be false and humanQuestion must be null. acquisitionAction must describe the legitimate next action without impersonating or directly addressing an absent holder. Preserve recipientJustification in either branch.
 
-On the last line output one strict JSON object with exactly: {"requiredEvidence":"...","evidenceHolder":"...","acquisitionRoute":"...","acquisitionAction":"...","currentUserIsAppropriateEvidenceHolder":<true|false>,"recipientJustification":"...","humanQuestion":"<non-empty when currentUserIsAppropriateEvidenceHolder is true, otherwise null>"}`;
+On the last line output exactly one strict JSON object — pick the shape that matches the branch the evidence supports, with no extra fields and no other variants:
+
+If currentUserIsAppropriateEvidenceHolder is true:
+{"requiredEvidence":"...","evidenceHolder":"...","acquisitionRoute":"...","acquisitionAction":"...","currentUserIsAppropriateEvidenceHolder":true,"recipientJustification":"...","humanQuestion":"..."}
+
+If currentUserIsAppropriateEvidenceHolder is false:
+{"requiredEvidence":"...","evidenceHolder":"...","acquisitionRoute":"...","acquisitionAction":"...","currentUserIsAppropriateEvidenceHolder":false,"recipientJustification":"...","humanQuestion":null}`;
 }
 
 export function buildAcquisitionReevaluationPrompt(state: InvestigationState): string {
