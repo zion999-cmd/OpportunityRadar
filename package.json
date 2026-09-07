@@ -18,7 +18,12 @@
     "recruiting-poc-intent-boundary-cli": "tsx scripts/recruiting-poc-intent-boundary-cli.ts",
     "recruiting-poc-intent-update-cli": "tsx scripts/recruiting-poc-intent-update-cli.ts",
     "recruiting-poc-session": "tsx scripts/recruiting-poc-session-cli.ts",
-    "recruiting-poc-session-resume": "tsx scripts/recruiting-poc-session-resume-cli.ts"
+    "recruiting-poc-session-resume": "tsx scripts/recruiting-poc-session-resume-cli.ts",
+    "recruiting-poc-investigation": "tsx scripts/recruiting-poc-investigation-cli.ts",
+    "recruiting-poc-acquisition-plan": "tsx scripts/recruiting-poc-acquisition-plan-cli.ts",
+    "recruiting-poc-acquisition-outcome": "tsx scripts/recruiting-poc-acquisition-outcome-cli.ts",
+    "recruiting-poc-p012-acquisition": "tsx scripts/recruiting-poc-p012-acquisition-cli.ts",
+    "recruiting-poc-p012-acquisition-outcome": "tsx scripts/recruiting-poc-p012-acquisition-outcome-cli.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
