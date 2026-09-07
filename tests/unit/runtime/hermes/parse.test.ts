@@ -72,6 +72,137 @@ describe('extractJsonObject', () => {
   it('throws on a JSON-looking but syntactically broken line', () => {
     expect(() => extractJsonObject('{"summary": broken')).toThrowError(/no parseable JSON/);
   });
+
+  it('recovers from balanced JSON with one extra trailing } (Stage 1 parser regression)', () => {
+    // The Stage 1 Recruiting-POC run produced a valid JSON
+    // object on the last line, then one extra `}` after the
+    // closing brace. Strategy 1 fails (the last line is not
+    // valid JSON with the extra brace), Strategy 2's
+    // right-to-left scan returns a slice that includes the
+    // extra `}` and JSON.parse fails on it too. Strategy 3's
+    // forward scan finds the actual end of the JSON (where
+    // depth first returns to 0) and returns the object.
+    const obj = { summary: 'six relationships surfaced', relationships: [] };
+    const json = JSON.stringify(obj);
+    const stdout = `Prose line one.\nProse line two.\n${json}}\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
+
+  it('recovers from balanced JSON with multiple extra trailing }s', () => {
+    // Even when the model emits several stray closers, the
+    // forward scan recovers the first parseable prefix.
+    const obj = { summary: 'x', relationships: [] };
+    const json = JSON.stringify(obj);
+    const stdout = `${json}}}}\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
+
+  it('recovers when trailing junk (prose) follows a balanced JSON object', () => {
+    // Strategy 2's right-to-left scan finds a balanced slice
+    // that includes the trailing junk, so JSON.parse fails.
+    // The forward scan stops at the actual end of the JSON.
+    const obj = { summary: 'x', relationships: [] };
+    const json = JSON.stringify(obj);
+    const stdout = `${json}\nDone. End of run.\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
+
+  it('recovers from balanced JSON followed by a stray } in the middle of trailing prose', () => {
+    // The "extra }" may not be adjacent to the JSON — it may
+    // be part of a stray closing brace in trailing prose.
+    // The forward scan still finds the actual end first.
+    const obj = { summary: 'x', relationships: [] };
+    const json = JSON.stringify(obj);
+    const stdout = `${json}\n} stray closer here\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
+
+  it('recovers a realistic multi-relationship JSON with the Stage 1 extra-brace pattern', () => {
+    // A faithful reproduction of the Stage 1 failure shape:
+    // 2 relationships, balanced, then one extra `}`. Verifies
+    // the full 5-field per-relationship shape survives the
+    // recovery.
+    const obj = {
+      summary: 'Two candidates worth exploring.',
+      relationships: [
+        {
+          candidateId: 'C01',
+          judgment: 'worth_exploring',
+          analysis: 'C01 owned a Kafka deployment.',
+          evidence: ['C01: "I owned the Kafka deployment that handled order events."'],
+          unknowns: ['C01 cluster size not known.'],
+          nextStep: 'Ask C01 for the most recent postmortem.',
+        },
+        {
+          candidateId: 'C02',
+          judgment: 'uncertain',
+          analysis: 'C02 has SRE transfer potential.',
+          evidence: ['C02: "I do incident command, write postmortems"'],
+          unknowns: ['Whether C02 can ramp on Kafka.'],
+          nextStep: 'Probe C02 on how they would learn Kafka in week 1.',
+        },
+      ],
+    };
+    const json = JSON.stringify(obj);
+    const stdout = `Here is what I found across the pool.\n\n${json}}\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
+
+  it('ignores extra trailing }s inside JSON string values (still parses the object)', () => {
+    // The forward scan must be string-aware so a `}` inside
+    // a JSON string does not get treated as the object end.
+    // A simple balanced search that ignores strings might
+    // stop early here. The first parseable end is the actual
+    // one.
+    const obj = { summary: 'has } in string', note: 'close brace } inside text' };
+    const json = JSON.stringify(obj);
+    const stdout = `Prose.\n${json}\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
+
+  it('repairs an extra ] emitted between a string value and the closing } of an object (Strategy 4 surgical removal)', () => {
+    // Stage 1 oracle run failure pattern, generalised: the
+    // model emitted one extra `]` between the last property
+    // value and the closing `}` of each relationship, so the
+    // JSON had 6 stray `]`s interspersed with valid structure.
+    // Strategy 2's right-to-left scan returns the full JSON
+    // (it ignores `[` / `]`), so the slice is the entire
+    // document; Strategy 4 (surgical single-char removal at
+    // the parser-reported error position) iterates and
+    // converges on a valid parse.
+    const obj = {
+      summary: 'two relationships, both with stray ] before close }',
+      relationships: [
+        {
+          candidateId: 'C01',
+          judgment: 'worth_exploring',
+          analysis: 'first',
+          evidence: ['e1'],
+          unknowns: ['u1'],
+          nextStep: 'n1',
+        },
+        {
+          candidateId: 'C02',
+          judgment: 'uncertain',
+          analysis: 'second',
+          evidence: ['e2'],
+          unknowns: ['u2'],
+          nextStep: 'n2',
+        },
+      ],
+    };
+    const json = JSON.stringify(obj);
+    // Insert one stray `]` between each relationship's
+    // nextStep value and its closing `}`. This matches the
+    // Stage 1 model emission pattern.
+    const sabotaged = json
+      .replace('"nextStep":"n1"}', '"nextStep":"n1"]}')
+      .replace('"nextStep":"n2"}', '"nextStep":"n2"]}');
+    // Sanity: the sabotaged JSON is not directly parseable.
+    expect(() => JSON.parse(sabotaged)).toThrow();
+    const stdout = `Prose line.\n${sabotaged}\n`;
+    expect(extractJsonObject(stdout)).toEqual(obj);
+  });
 });
 
 describe('parseHermesOutput', () => {

@@ -84,6 +84,110 @@ function findLastBalancedJsonObject(text: string): string | null {
 }
 
 /**
+ * Find every position in `text` where a forward scan from the
+ * first `{` reaches brace/bracket depth 0 (i.e. the end of a
+ * balanced top-level JSON object). The first `{` to a depth-0
+ * `}` is the natural end of the object; any subsequent chars
+ * are candidate trailing junk.
+ *
+ * The scan is string-aware (`"` toggles inString, `\\` escapes
+ * the next char) so braces inside JSON string values do not
+ * count.
+ */
+function findTopLevelObjectEndPositions(text: string): number[] {
+  const firstBrace = text.indexOf('{');
+  if (firstBrace < 0) return [];
+  const endPositions: number[] = [];
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let everPositive = false;
+  for (let i = firstBrace; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{' || ch === '[') {
+      depth += 1;
+      if (depth > 0) everPositive = true;
+    } else if (ch === '}' || ch === ']') {
+      depth -= 1;
+      if (depth === 0 && everPositive) {
+        endPositions.push(i);
+      }
+    }
+  }
+  return endPositions;
+}
+
+/**
+ * Try to recover from a JSON parse error by removing the
+ * character at the position the parser reported. The model
+ * occasionally emits one or more stray `}` or `]` between
+ * a property value and the closing `}` of its object (a
+ * "double-close" failure). Removing the offending char and
+ * re-parsing is a generic, schema-agnostic recovery that
+ * does not hard-code any specific JSON shape.
+ *
+ * Strategy: try `JSON.parse(candidate)`. If it fails with a
+ * SyntaxError that names a position, try removing the char
+ * at that position and re-parse. Iterate up to
+ * `MAX_REMOVALS` times. If the parse succeeds at any point,
+ * return the value. If we exhaust the budget, return
+ * `undefined` so the caller can fall through.
+ *
+ * The function is conservative in two ways:
+ *   - It only removes ONE character per iteration (not a
+ *     suffix), so a malformed JSON with many interleaved
+ *     errors will surface after a few iterations rather than
+ *     silently dropping valid content.
+ *   - It only triggers when the original parse fails with a
+ *     position-tagged SyntaxError. Any other error (e.g.
+ *     `null` input, type errors) propagates immediately.
+ */
+const MAX_REMOVALS = 12;
+
+function tryParseWithSingleCharRemoval(candidate: string): unknown {
+  let current = candidate;
+  for (let iter = 0; iter < MAX_REMOVALS; iter += 1) {
+    try {
+      return JSON.parse(current);
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) {
+        throw err;
+      }
+      const match = /position (\d+)/.exec(err.message);
+      if (match === null) {
+        return undefined;
+      }
+      const pos = Number(match[1]);
+      if (!Number.isInteger(pos) || pos < 0 || pos >= current.length) {
+        return undefined;
+      }
+      // Drop the char at the error position. We do not try
+      // to "fix" the char (e.g. by changing `]` to `}`) —
+      // a single-char removal preserves every other byte of
+      // the original stdout and is the smallest possible
+      // change. The next iteration re-parses from the
+      // beginning and surfaces the next error position.
+      current = current.slice(0, pos) + current.slice(pos + 1);
+    }
+  }
+  return undefined;
+}
+
+/**
  * Extract the last JSON object from Hermes's stdout.
  *
  * Strategy (in order):
@@ -94,8 +198,26 @@ function findLastBalancedJsonObject(text: string): string | null {
  *      `{...}` block in the entire stdout. Handles pretty-
  *      printed JSON that spans multiple lines and JSON
  *      surrounded by markdown code fences.
- *   3. If both fail, throw — the adapter treats this as a
- *      Hermes failure and the bridge records the run as
+ *   3. Trailing-junk forward scan: when the model emits a
+ *      balanced JSON object followed by extra closing braces /
+ *      brackets (or any trailing characters), the balanced
+ *      search above returns a slice that includes the extra
+ *      closers and JSON.parse fails. The forward scan
+ *      records every position where the depth first returns
+ *      to 0 — the first such position is the actual end of
+ *      the JSON, and any chars past it are junk. We try
+ *      JSON.parse at each such position; the first that
+ *      parses wins.
+ *   4. Surgical single-char removal: when the JSON itself
+ *      contains one or more stray closers (e.g. an extra
+ *      `]` between a property value and the closing `}` of
+ *      its object), the previous strategies' slices
+ *      parse-fail mid-JSON. Both the right-to-left
+ *      balanced slice (Strategy 2) and each forward-scan
+ *      slice (Strategy 3) are retried under iterative
+ *      single-char removal at the error position.
+ *   5. If all four fail, throw — the adapter treats this as
+ *      a Hermes failure and the bridge records the run as
  *      `failed`.
  */
 export function extractJsonObject(stdout: string): unknown {
@@ -111,7 +233,15 @@ export function extractJsonObject(stdout: string): unknown {
       // Even a single-line candidate that looks like JSON may
       // not parse (e.g. a trailing period or a backtick). Try
       // one in-place repair: take the substring from the
-      // line's last `{` to its last `}`.
+      // line's last `{` to its last `}`. This handles the
+      // common case of trailing junk on a flat-JSON line; for
+      // a line with nested objects the substring is the
+      // innermost balanced block, which JSON.parse will
+      // reject and we will continue to the next line.
+      // Surgical char removal is NOT applied here — when
+      // the substring is an inner object, iterative
+      // removal would "succeed" by parsing the inner
+      // object (not the outer JSON the caller expects).
       const firstBrace = line.lastIndexOf('{');
       const lastBrace = line.lastIndexOf('}');
       if (firstBrace < 0 || lastBrace <= firstBrace) continue;
@@ -124,13 +254,52 @@ export function extractJsonObject(stdout: string): unknown {
     }
   }
 
-  // Strategy 2: multi-line balanced search.
-  const candidate = findLastBalancedJsonObject(stdout);
-  if (candidate !== null) {
+  // Strategy 2: multi-line balanced search. The right-to-left
+  // walk tracks only `{` and `}` (not `[` / `]`), so it
+  // returns a slice that includes the full JSON even when
+  // the model emitted extra `]` characters. Try the slice
+  // verbatim, then under surgical char removal (Strategy 4)
+  // — but only when the slice is actually JSON-like (i.e.
+  // contains a string-quote). A bare `{ word }` fragment in
+  // prose has balanced braces but is not a JSON object;
+  // surgical removal on it would happily strip the word
+  // out and "succeed" with an empty `{}`, masking the
+  // real "no JSON in this stdout" condition.
+  const balanced = findLastBalancedJsonObject(stdout);
+  if (balanced !== null) {
     try {
-      return JSON.parse(candidate);
+      return JSON.parse(balanced);
     } catch {
-      // Fall through to throw.
+      if (balanced.includes('"')) {
+        const repaired = tryParseWithSingleCharRemoval(balanced);
+        if (repaired !== undefined) {
+          return repaired;
+        }
+      }
+      // Fall through to Strategy 3.
+    }
+  }
+
+  // Strategy 3: forward scan from the first `{`, recording
+  // every position where depth returns to 0. Try JSON.parse
+  // at each such position; the first that parses wins. This
+  // is the recovery path for trailing-junk cases that
+  // Strategy 2's right-to-left walk cannot distinguish.
+  // Each candidate is tried verbatim only — the forward-
+  // scan slices may be incomplete (when stray `]` chars
+  // bring depth to 0 prematurely mid-JSON), so surgical
+  // removal on an incomplete slice would risk returning
+  // a sub-object.
+  const firstBrace = stdout.indexOf('{');
+  if (firstBrace >= 0) {
+    const endPositions = findTopLevelObjectEndPositions(stdout);
+    for (const pos of endPositions) {
+      const candidate = stdout.slice(firstBrace, pos + 1);
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        // Try the next end position.
+      }
     }
   }
 

@@ -27,6 +27,9 @@
     "shared/**/*.ts",
     "evidence/**/*.ts",
     "storage/**/*.ts",
+    "matching/**/*.ts",
+    "runtime/**/*.ts",
+    "semantic-completion/**/*.ts",
     "scripts/**/*.ts",
     "tests/**/*.ts",
     "vitest.config.ts"

@@ -8,7 +8,17 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:init": "tsx scripts/db-init.ts",
-    "cli": "tsx scripts/cli.ts"
+    "cli": "tsx scripts/cli.ts",
+    "matching-cli": "tsx scripts/matching-cli.ts",
+    "discovery-cli": "tsx scripts/discovery-cli.ts",
+    "semantic-completion-cli": "tsx scripts/semantic-completion-cli.ts",
+    "semantic-completion-cross-domain-cli": "tsx scripts/semantic-completion-cross-domain-cli.ts",
+    "recruiting-poc-cli": "tsx scripts/recruiting-poc-cli.ts",
+    "recruiting-poc-recover-cli": "tsx scripts/recruiting-poc-recover-cli.ts",
+    "recruiting-poc-intent-boundary-cli": "tsx scripts/recruiting-poc-intent-boundary-cli.ts",
+    "recruiting-poc-intent-update-cli": "tsx scripts/recruiting-poc-intent-update-cli.ts",
+    "recruiting-poc-session": "tsx scripts/recruiting-poc-session-cli.ts",
+    "recruiting-poc-session-resume": "tsx scripts/recruiting-poc-session-resume-cli.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
