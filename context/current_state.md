@@ -7,13 +7,21 @@
 ## Status
 
 ```
-Status: Evidence Foundation (P0001 Completed)
-        + Exploration Bridge (P0002 Implementing — Agent-neutral
-          + Active Dispatch, Hermes as first concrete adapter;
-          architecture approved 2026-09-04; hard live-acceptance
-          met 2026-09-04; awaiting human review of the
-          hard-acceptance report and authorization to commit)
+Status: main @ 69ea22f — P0001 Evidence Foundation completed;
+        P0002 Exploration Bridge completed and on main.
+        Branch feature/semantic-native-poc (frozen stages):
+          - Semantic Native Recruiting POC stage frozen 2026-09-07
+            (STAGE-RECRUITING-POC-01.md, commit 9fbb2bb lineage)
+          - recruiting-exhibit live radar/inbox web exhibit
+          - POC-SURFACE-01 Semantic Magazine Web Surface frozen
+            2026-09-13 (commit 7b5916a + docs freeze commit;
+            STAGE-POC-SURFACE-01.md)
 ```
+
+> The P0001/P0002 narrative sections below are retained as the
+> historical record of those Proposals. Current branch state is
+> tracked in `context/handoff.md`; per truth priority, actual code
+> wins over these summaries.
 
 ## Completed
 
