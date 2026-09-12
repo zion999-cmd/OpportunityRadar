@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bfe0f2"/>
+      <stop offset="1" stop-color="#7fb98a"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="400" fill="url(#sky3)"/>
+  <!-- hills -->
+  <path d="M0 300 Q150 240 300 290 T600 280 V400 H0 Z" fill="#5e9e6e"/>
+  <path d="M0 340 Q200 290 400 335 T600 330 V400 H0 Z" fill="#47855a"/>
+  <!-- turbines -->
+  <g stroke="#f4f9f5" stroke-width="4" stroke-linecap="round">
+    <line x1="140" y1="300" x2="140" y2="170"/>
+    <line x1="330" y1="300" x2="330" y2="140"/>
+    <line x1="480" y1="300" x2="480" y2="190"/>
+  </g>
+  <g fill="#f4f9f5">
+    <g transform="translate(140 165)"><circle r="8"/><path d="M0 -6 L0 -52 M0 6 L38 34 M0 6 L-38 34" stroke="#f4f9f5" stroke-width="5" stroke-linecap="round"/></g>
+    <g transform="translate(330 135)"><circle r="9"/><path d="M0 -7 L0 -58 M0 7 L42 38 M0 7 L-42 38" stroke="#f4f9f5" stroke-width="6" stroke-linecap="round"/></g>
+    <g transform="translate(480 185)"><circle r="7"/><path d="M0 -5 L0 -44 M0 5 L33 29 M0 5 L-33 29" stroke="#f4f9f5" stroke-width="4" stroke-linecap="round"/></g>
+  </g>
+  <!-- sun -->
+  <circle cx="90" cy="80" r="34" fill="#fff6d8" opacity="0.85"/>
+</svg>

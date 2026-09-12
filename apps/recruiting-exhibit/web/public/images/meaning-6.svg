@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="warm6" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#caa074"/>
+      <stop offset="1" stop-color="#7c5230"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="400" fill="url(#warm6)"/>
+  <!-- desk surface -->
+  <rect x="0" y="280" width="600" height="120" fill="#6b4727"/>
+  <!-- open book -->
+  <path d="M150 250 Q300 200 450 250 L450 320 Q300 276 150 320 Z" fill="#f5ecdd"/>
+  <path d="M300 222 L300 282" stroke="#cdbb9e" stroke-width="3"/>
+  <g stroke="#cbb898" stroke-width="4" stroke-linecap="round">
+    <line x1="186" y1="252" x2="276" y2="232"/><line x1="186" y1="268" x2="276" y2="248"/>
+    <line x1="186" y1="284" x2="276" y2="264"/>
+    <line x1="324" y1="232" x2="414" y2="252"/><line x1="324" y1="248" x2="414" y2="268"/>
+    <line x1="324" y1="264" x2="414" y2="284"/>
+  </g>
+  <!-- pencil -->
+  <g transform="rotate(-24 470 250)">
+    <rect x="430" y="242" width="110" height="14" rx="3" fill="#e0a23a"/>
+    <polygon points="540,242 560,249 540,256" fill="#f2e3c2"/>
+    <polygon points="556,246 562,249 556,252" fill="#333"/>
+  </g>
+  <!-- reading lamp glow -->
+  <circle cx="120" cy="110" r="70" fill="#ffe9bd" opacity="0.28"/>
+  <circle cx="120" cy="110" r="30" fill="#ffe9bd" opacity="0.6"/>
+</svg>

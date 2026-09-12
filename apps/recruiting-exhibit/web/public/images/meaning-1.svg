@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c2a5e"/>
+      <stop offset="1" stop-color="#123f86"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="400" fill="url(#bg1)"/>
+  <!-- circuit grid -->
+  <g stroke="#5ea0ff" stroke-opacity="0.35" stroke-width="1.5" fill="none">
+    <path d="M40 80h140v90h120v70h150"/><path d="M40 200h90v-70h80"/>
+    <path d="M40 300h180v-80h110"/><path d="M360 80h200"/><path d="M420 240v120"/>
+  </g>
+  <g fill="#7db4ff">
+    <circle cx="180" cy="80" r="5"/><circle cx="300" cy="170" r="5"/><circle cx="450" cy="240" r="5"/>
+    <circle cx="130" cy="200" r="4"/><circle cx="220" cy="300" r="4"/><circle cx="360" cy="80" r="4"/>
+  </g>
+  <!-- floating AI mark -->
+  <g opacity="0.9">
+    <text x="300" y="230" text-anchor="middle" font-family="Georgia, serif" font-size="150" fill="#cfe0ff" opacity="0.25">AI</text>
+  </g>
+</svg>

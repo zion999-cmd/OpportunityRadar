@@ -3,8 +3,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+
+    "jsx": "react-jsx",
 
     "strict": true,
     "noImplicitAny": true,
@@ -23,23 +25,5 @@
 
     "verbatimModuleSyntax": false
   },
-  "include": [
-    "shared/**/*.ts",
-    "evidence/**/*.ts",
-    "storage/**/*.ts",
-    "matching/**/*.ts",
-    "runtime/**/*.ts",
-    "semantic-completion/**/*.ts",
-    "scripts/**/*.ts",
-    "apps/**/*.ts",
-    "tests/**/*.ts",
-    "vitest.config.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "build",
-    "coverage",
-    "apps/recruiting-exhibit/web"
-  ]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
 }

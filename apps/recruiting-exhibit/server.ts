@@ -6,7 +6,7 @@
 // exhibit is a vertical slice, not a production web service.
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { HermesClient } from '../../runtime/hermes/types.js';
@@ -36,9 +36,22 @@ const MIME: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
 };
 
-export function startServer(deps: ServerDeps): { stop: () => void; triggerNow: () => Promise<RunResult> } {
+export interface StartedServer {
+  stop(): void;
+  triggerNow(): Promise<RunResult>;
+  /** Resolves once the HTTP socket is accepting connections. */
+  ready: Promise<void>;
+}
+
+export function startServer(deps: ServerDeps): StartedServer {
   const { db, client, port, now, intervalMs } = deps;
   const triggerNow = (): Promise<RunResult> => runObservation({ db, client, now }, 'manual');
 
@@ -56,8 +69,11 @@ export function startServer(deps: ServerDeps): { stop: () => void; triggerNow: (
 
   const scheduleConfig: ScheduleConfig = { intervalMs };
   const server = createServer((req, res) => handle(req, res, { db, triggerNow, schedule: scheduleConfig }));
-  server.listen(port, () => {
-    process.stdout.write(`recruiting-exhibit listening on http://127.0.0.1:${port}\n`);
+  const ready = new Promise<void>((resolveReady) => {
+    server.listen(port, () => {
+      process.stdout.write(`recruiting-exhibit listening on http://127.0.0.1:${port}\n`);
+      resolveReady();
+    });
   });
 
   return {
@@ -66,6 +82,7 @@ export function startServer(deps: ServerDeps): { stop: () => void; triggerNow: (
       server.close();
     },
     triggerNow,
+    ready,
   };
 }
 
@@ -79,13 +96,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HandleDep
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
   const method = req.method ?? 'GET';
 
-  // Static
+  // Built frontend assets. Vite emits hashed files under
+  // /assets/ and copies web/public/* to the static root.
   if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     serveStatic(res, 'index.html');
     return;
   }
-  if (method === 'GET' && url.pathname.startsWith('/static/')) {
-    serveStatic(res, url.pathname.replace(/^\/static\//, ''));
+  if (method === 'GET' && (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/images/') || url.pathname === '/favicon.ico')) {
+    serveStatic(res, url.pathname.replace(/^\/+/, ''));
     return;
   }
 
@@ -144,24 +162,41 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: HandleDep
     }
   }
 
+  // SPA fallback: every other GET route is a client-side route
+  // (e.g. /meaning/:id, /radar) and is served the same shell.
+  if (method === 'GET' && !url.pathname.startsWith('/api/')) {
+    serveStatic(res, 'index.html');
+    return;
+  }
+
   json(res, 404, { error: 'not found' } satisfies JsonError);
 }
 
 function serveStatic(res: ServerResponse, name: string): void {
-  // Sanitize: reject path traversal and only allow plain filenames.
-  if (name.includes('/') || name.includes('\\') || name.includes('..')) {
+  // Resolve within STATIC_DIR and reject anything that escapes
+  // it (path traversal). Subdirectories such as assets/ and
+  // images/ are allowed — Vite emits hashed bundles there.
+  const safeName = name.split('\\').join('/');
+  const path = resolve(STATIC_DIR, safeName);
+  const staticRoot = `${STATIC_DIR}${sep}`;
+  if (path !== STATIC_DIR && !path.startsWith(staticRoot)) {
     json(res, 404, { error: 'not found' });
     return;
   }
-  const path = resolve(STATIC_DIR, name);
   let buf: Buffer;
   try {
     buf = readFileSync(path);
   } catch {
+    // Missing index.html means the frontend has not been built.
+    if (safeName === 'index.html') {
+      res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('Frontend build missing. Run: npm run recruiting-exhibit:web');
+      return;
+    }
     json(res, 404, { error: 'not found' });
     return;
   }
-  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+  const ext = safeName.includes('.') ? safeName.slice(safeName.lastIndexOf('.')) : '';
   res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' });
   res.end(buf);
 }

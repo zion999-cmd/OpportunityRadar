@@ -23,6 +23,12 @@ export interface ObservationStatus {
   readonly newRelationshipCount: number;
   readonly totalSurfaces: number;
   /**
+   * Total reconstructed-evidence rows currently stored. The
+   * Surface uses this as an honest aggregate ("Recovered
+   * Evidence") instead of fabricating per-category counts.
+   */
+  readonly totalEvidenceCount: number;
+  /**
    * Error summary from the most recent run, if any. Audit fix
    * #3: partial failure is observable. `null` means the most
    * recent run completed with no errors recorded.
@@ -38,7 +44,25 @@ export interface InboxEntry {
   readonly sourceUrl: string;
   /** Originating feed URL — surfaced alongside the article link. */
   readonly feedUrl: string;
+  /**
+   * Feed item title as captured. Read-only field added for the
+   * magazine Surface: the Semantic Card evidence preview and
+   * the detail-page Evidence section need a human-readable
+   * source title in addition to the reconstructed claim.
+   */
+  readonly sourceTitle: string;
+  /**
+   * Raw feed excerpt. Read-only field added for the Surface:
+   * the detail-page Evidence section (the Trust Layer) shows
+   * the source excerpt next to the clickable article URL.
+   */
+  readonly rawExcerpt: string;
   readonly claim: string;
+  /**
+   * Stage-2 reconstructed interpretation of the Evidence. The
+   * Surface maps this to the card's short semantic summary.
+   */
+  readonly impliedMeaning: string;
   readonly whyRelevant: string;
   readonly evidenceUsed: string;
   readonly mostImportantUnknown: string;
@@ -72,6 +96,9 @@ const LATEST_RUN_COUNTS_SQL = `
 const TOTAL_SURFACED_SQL = `
   SELECT COUNT(*) AS c FROM exhibit_relationship_results WHERE surface_decision = 'surface'
 `;
+const TOTAL_EVIDENCE_SQL = `
+  SELECT COUNT(*) AS c FROM exhibit_reconstructed_evidence
+`;
 const INBOX_SQL = `
   SELECT
     r.id              AS relationshipId,
@@ -79,7 +106,10 @@ const INBOX_SQL = `
     s.source_label    AS sourceLabel,
     s.source_url      AS sourceUrl,
     s.feed_url        AS feedUrl,
+    COALESCE(s.title, '') AS sourceTitle,
+    s.raw_excerpt     AS rawExcerpt,
     e.claim           AS claim,
+    e.implied_meaning AS impliedMeaning,
     r.why_relevant    AS whyRelevant,
     r.evidence_used   AS evidenceUsed,
     r.most_important_unknown AS mostImportantUnknown,
@@ -123,6 +153,7 @@ export function readStatus(db: SqliteDatabase, schedule: ScheduleConfig): Observ
   const last = db.prepare(LAST_RUN_SQL).get() as { started_at: string; status: 'running' | 'succeeded' | 'failed'; error_message: string | null } | undefined;
   const counts = db.prepare(LATEST_RUN_COUNTS_SQL).get() as { new_evidence_count: number; new_relationship_count: number } | undefined;
   const totalSurfaced = (db.prepare(TOTAL_SURFACED_SQL).get() as { c: number } | undefined)?.c ?? 0;
+  const totalEvidence = (db.prepare(TOTAL_EVIDENCE_SQL).get() as { c: number } | undefined)?.c ?? 0;
 
   let nextObservationAt: string | null = null;
   if (last !== undefined) {
@@ -139,6 +170,7 @@ export function readStatus(db: SqliteDatabase, schedule: ScheduleConfig): Observ
     newEvidenceCount: counts?.new_evidence_count ?? 0,
     newRelationshipCount: counts?.new_relationship_count ?? 0,
     totalSurfaces: totalSurfaced,
+    totalEvidenceCount: totalEvidence,
     lastError: last?.error_message ?? null,
   };
 }

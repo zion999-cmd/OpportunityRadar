@@ -8,7 +8,18 @@
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase } from '../../storage/connection.js';
 
-export const DEFAULT_SITUATION = `We are a 50-person B2B SaaS team. We need a senior backend engineer who can own a high-throughput event-streaming pipeline (Kafka), reason about distributed-systems trade-offs in writing, and ship production code with minimal supervision. We prefer evidence-grounded reasoning over keyword matching; the bar is a candidate who can independently decompose a real production incident, write a precise postmortem, and explain the trade-offs they did NOT take.`;
+// POC-SURFACE-01 demo Situation. This is a demo default for the
+// single active Action Lens ("求职 / 应聘") — the user can still
+// replace it with their own raw text; nothing parses it.
+export const DEFAULT_SITUATION =
+  '我做过多年企业软件和后端系统，参与过复杂业务系统落地，现在希望寻找下一阶段职业机会。我并不确定自己的经历在 AI 时代应该如何被理解。';
+
+// The pre-Surface demo Situation was an English hiring-team /
+// Kafka brief, which does not fit the magazine's job-seeker
+// framing. If that exact demo string is still the only stored
+// Situation, it is replaced by the new default once. User-edited
+// text (anything different) is never touched.
+const LEGACY_DEMO_SITUATION = `We are a 50-person B2B SaaS team. We need a senior backend engineer who can own a high-throughput event-streaming pipeline (Kafka), reason about distributed-systems trade-offs in writing, and ship production code with minimal supervision. We prefer evidence-grounded reasoning over keyword matching; the bar is a candidate who can independently decompose a real production incident, write a precise postmortem, and explain the trade-offs they did NOT take.`;
 
 export interface SituationRow {
   readonly rawText: string;
@@ -27,6 +38,12 @@ export function readSituation(db: SqliteDatabase): SituationRow {
     seedDefault(db);
     const seeded = db.prepare(GET_SITUATION_SQL).get() as { raw_text: string; updated_at: string };
     return { rawText: seeded.raw_text, updatedAt: seeded.updated_at };
+  }
+  // One-time replacement of the pre-Surface English demo brief.
+  if (row.raw_text.trim() === LEGACY_DEMO_SITUATION.trim()) {
+    const now = new Date().toISOString();
+    db.prepare(UPSERT_SITUATION_SQL).run(DEFAULT_SITUATION, now);
+    return { rawText: DEFAULT_SITUATION, updatedAt: now };
   }
   return { rawText: row.raw_text, updatedAt: row.updated_at };
 }
